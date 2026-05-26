@@ -1,6 +1,8 @@
 # sparcd-explorer
 
-Marimo notebooks for exploring data extracted from SPARC'd servers.
+A focused, mostly-static exploration tool that reads from the SPARC'd MinIO
+backend and renders interactive views of camera-trap data. One of the
+single-purpose tools under `sparcd-exploration`.
 
 ## Setup
 

@@ -1,14 +1,28 @@
 # sparcd-exploration
 
-Turborepo monorepo for SPARC'd data exploration. Multiple apps and shared
-packages live side by side and are orchestrated by
-[Turborepo](https://turborepo.com).
+A workspace for building small, focused, mostly-static tools that work
+alongside [SPARC'd](https://github.com/CulverLab/sparcd-web) — each one
+tuned end-to-end for a single feature.
 
-The flagship app is `apps/sparcd-explorer` — a [marimo](https://marimo.io)
+The first such tool is `apps/sparcd-explorer` — a [marimo](https://marimo.io)
 notebook that connects to the SPARC'd MinIO backend, bins camera locations
 into H3 hexagons, and serves an interactive species-richness report. It also
 exports to a static Pyodide bundle that runs entirely in the browser
 (see [Static deploy](#static-deploy)).
+
+## Approach
+
+- **Alongside SPARC'd.** SPARC'd is the system of record; the tools here
+  read from it and add focused views on top.
+- **One tool, one job.** Each app in `apps/` solves a single concrete user
+  problem (a specific report, a specific view, a specific export). When a new
+  need shows up, we add a new app.
+- **Static where possible.** Prefer designs that can ship as a static bundle
+  (Pyodide / WASM, prebuilt data files, signed S3 URLs). Each tool stays
+  cheap to host, easy to share, and free of server-side state.
+- **Optimize per feature.** With a narrow scope per app, we pick the best
+  primitives for that job — data model, layout, interactions — without
+  compromise for anything else.
 
 ## Layout
 
@@ -62,5 +76,7 @@ succeed.
 
 ## Background notes
 
-See `architecture.md`, `architecture-pwa.md`, `codex-brief.md`,
-`multi-user-question.md`, and `plan-p2p-no-s3.md` at the repo root.
+`architecture.md`, `architecture-pwa.md`, `codex-brief.md`,
+`multi-user-question.md`, and `plan-p2p-no-s3.md` are early exploration
+notes kept for reference. The current direction is the "Approach" section
+above.
