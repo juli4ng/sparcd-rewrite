@@ -43,6 +43,12 @@ type UploaderState = {
   uploadDescription: string; // free-text description for UploadMeta
   dryRun: boolean; // on by default; logs PUTs and writes nothing
   uploadConcurrency: number; // parallel blob lanes, 4–16
+  // P6 production gate. Session-only (never persisted): the operator must
+  // re-affirm each session that the reader-sentinel rollout and the recorded
+  // second review are done before any wet write to a production bucket. Test
+  // buckets ignore it. Reset on connect/disconnect/nextBatch so the friction is
+  // deliberate, not sticky.
+  productionAck: boolean;
 
   connect: (config: S3Config) => void;
   disconnect: () => void;
@@ -62,6 +68,7 @@ type UploaderState = {
   setUploadDescription: (value: string) => void;
   setDryRun: (value: boolean) => void;
   setUploadConcurrency: (value: number) => void;
+  setProductionAck: (value: boolean) => void;
   nextBatch: () => void;
 };
 
@@ -85,8 +92,9 @@ export const useStore = create<UploaderState>((set) => ({
   uploadDescription: '',
   dryRun: true,
   uploadConcurrency: 8,
+  productionAck: false,
 
-  connect: (config) => set({ s3Config: config }),
+  connect: (config) => set({ s3Config: config, productionAck: false }),
   disconnect: () =>
     set({
       s3Config: null,
@@ -96,6 +104,7 @@ export const useStore = create<UploaderState>((set) => ({
       validations: {},
       dirHandle: null,
       fileAccessMode: 'reselect-required',
+      productionAck: false,
     }),
   setSection: (section) => set({ section }),
   toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
@@ -159,6 +168,7 @@ export const useStore = create<UploaderState>((set) => ({
       batchToken: s.batchToken + 1,
       dirHandle: null,
       fileAccessMode: 'reselect-required',
+      productionAck: false,
     })),
 
   // Stored raw; sanitizeUploaderUser derives the key-safe slug at point of use.
@@ -168,6 +178,7 @@ export const useStore = create<UploaderState>((set) => ({
   setUploadDescription: (value) => set({ uploadDescription: value }),
   setDryRun: (value) => set({ dryRun: value }),
   setUploadConcurrency: (value) => set({ uploadConcurrency: value }),
+  setProductionAck: (value) => set({ productionAck: value }),
 
   // Start a fresh batch after a completed upload, keeping the deployment,
   // uploader, target collection, and description so a researcher can chain
@@ -180,5 +191,6 @@ export const useStore = create<UploaderState>((set) => ({
       batchToken: s.batchToken + 1,
       dirHandle: null,
       fileAccessMode: 'reselect-required',
+      productionAck: false,
     })),
 }));

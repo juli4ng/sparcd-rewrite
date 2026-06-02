@@ -879,6 +879,52 @@ SHA-256 reconciliation contract fully; this only runs on the exceptional
 reselect path. Wet resume is still fenced behind the same `VITE_S3_WRITE_BUCKETS`
 allowlist and live gates as P4 — P5 added no new write surface, only state.
 
+### P6 — done (2026-06-02)
+
+The production-bucket lift. P5 already proved out the full write+resume path
+against test buckets; P6 adds the policy layer that lets the uploader write to a
+**production** collection — but only behind a second, deliberate gate on top of
+the P4/P5 write allowlist. No new write mechanics (S3 scope is unchanged from
+P5); this phase is the in-app surface of safety layer 3's "production lift
+happens only after a recorded manual review" plus open question 6's reader
+sentinel rollout.
+
+- **Two-tier allowlist (`src/lib/s3.ts`).** A new `VITE_S3_PROD_BUCKETS`
+  allowlist (comma-separated, **empty by default**) names the write-enabled
+  buckets that are *not* disposable test buckets. `isProductionBucket(bucket)`
+  joins the existing `isWriteEnabled(bucket)`; the glob matcher both share was
+  lifted into one `matchesAny` helper. A production bucket must **still** be in
+  `VITE_S3_WRITE_BUCKETS` for the wrapper to permit a byte — the production flag
+  is purely an *additional* gate, never a grant. The `@sparcd/s3-safe` wrapper is
+  unchanged: it still enforces only the write allowlist, so the prod/test
+  distinction is an app-layer policy, not a new wrapper capability.
+- **Per-session acknowledgment (`store.ts`, `components/ProductionGate.tsx`).**
+  Writing to a production bucket forces dry-run until the operator affirms, **this
+  session**, that (1) every reader this project controls ignores upload prefixes
+  without `UploadComplete.json`, and (2) a second review of `@sparcd/s3-safe` +
+  the upload sequence + a successful test-bucket dry-run log is recorded. The ack
+  is session-only store state (`productionAck`) — never persisted, reset on
+  connect / disconnect / nextBatch / resetBatch — so the friction is deliberate
+  rather than sticky. The shared `ProductionGate` component (same pattern as the
+  shared `RunMonitor`) renders the two named gates plus the confirm checkbox.
+- **Wired into both write paths.** New-upload `Upload.tsx`: when the target is a
+  production bucket, `effectiveDryRun` stays forced (and the dry-run checkbox
+  stays locked) until acknowledged, the gate renders inline, and the action reads
+  "Start production upload". History `Upload`/resume `History.tsx`: `beginResume`
+  refuses a production resume until acknowledged, and the gate renders whenever an
+  open batch targets a write-enabled production bucket — so a resumed session
+  faces the same barrier as a fresh one.
+- **`.env.example`** now documents `VITE_S3_BUCKETS`, `VITE_S3_WRITE_BUCKETS`,
+  and the new `VITE_S3_PROD_BUCKETS`, each empty/defaulted with the gate it
+  represents spelled out.
+
+`tsc --noEmit` and `vite build` both pass. The remaining production-lift
+prerequisites are operational, not codeable here: the recorded second review,
+the live reader-sentinel rollout across the Java/Next/explorer readers (open
+question 6), and naming the production bucket in both `VITE_S3_WRITE_BUCKETS` and
+`VITE_S3_PROD_BUCKETS`. With those in place the app's gate is the last
+in-product checkpoint before a canonical write.
+
 ## Open questions for before P0
 
 1. **`uploaderUser` provenance.** Free text vs. tied to S3 access key

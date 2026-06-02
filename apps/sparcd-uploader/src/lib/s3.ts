@@ -29,12 +29,36 @@ export function writeAllowlist(): string[] {
   return raw.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-/** Whether `bucket` is currently write-enabled (matches the write allowlist). */
-export function isWriteEnabled(bucket: string): boolean {
-  return writeAllowlist().some((pattern) => {
+// Production allowlist (P6): the subset of write-enabled buckets that are NOT
+// disposable test buckets. Empty by default. A bucket named here is still only
+// writable if it is also in the write allowlist (the wrapper enforces that), but
+// being flagged production adds a per-session acknowledgment gate in the UI —
+// the operator must confirm the reader-sentinel rollout and the recorded second
+// review are done before any byte lands. This is the in-app surface of safety
+// layer 3's "production lift happens only after a recorded manual review."
+export function prodAllowlist(): string[] {
+  const raw = import.meta.env.VITE_S3_PROD_BUCKETS as string | undefined;
+  if (!raw) return [];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+// Allowlist entries are exact names or `*`-globs matching any run of non-`/`
+// chars — the same grammar the s3-safe wrapper uses.
+function matchesAny(bucket: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => {
     const re = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
     return re.test(bucket);
   });
+}
+
+/** Whether `bucket` is currently write-enabled (matches the write allowlist). */
+export function isWriteEnabled(bucket: string): boolean {
+  return matchesAny(bucket, writeAllowlist());
+}
+
+/** Whether `bucket` is flagged production (matches the production allowlist). */
+export function isProductionBucket(bucket: string): boolean {
+  return matchesAny(bucket, prodAllowlist());
 }
 
 // Cache the client by a stable identity of the connection so repeated reads
