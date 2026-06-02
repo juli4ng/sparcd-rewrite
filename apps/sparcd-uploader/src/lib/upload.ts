@@ -250,7 +250,7 @@ function makeRunner(
   const processItem = async (sessionId: string, fp: FileProgress, it: PlanItem): Promise<void> => {
     // A completed blob from a prior run: sanity-check the remote copy before
     // skipping it. Size + recorded SHA-256 metadata is the portable contract.
-    if (it.doneAlready) {
+    const verifyExisting = async (): Promise<boolean> => {
       try {
         const stat = await client.statObject(snap.bucket, it.key);
         if (stat.size === it.size && stat.metadata.sha256 === it.sha256) {
@@ -259,13 +259,18 @@ function makeRunner(
           fp.loaded = it.size;
           log('info', `verified, skip: ${it.key}`);
           emit(true);
-          return;
+          return true;
         }
-        log('warn', `remote mismatch, re-uploading: ${it.key}`);
+        log('warn', `remote mismatch: ${it.key}`);
       } catch (err) {
         if (isNotFound(err)) log('warn', `remote missing, re-uploading: ${it.key}`);
         else throw err;
       }
+      return false;
+    };
+
+    if (it.doneAlready) {
+      if (await verifyExisting()) return;
     }
 
     if (!it.file) {
@@ -310,14 +315,13 @@ function makeRunner(
         return;
       } catch (err) {
         if (err instanceof PreconditionFailedError) {
-          // The key is already occupied (a re-run of the same prefix): nothing
-          // to write. Treat as present — the forward hook for resume.
-          fp.state = 'skipped';
-          snap.uploadedBytes += fp.size - fp.loaded;
-          fp.loaded = fp.size;
-          persistFile(sessionId, it.localPath, { state: 'done' });
-          log('warn', `skip (exists): ${it.key}`);
-          return;
+          // Fresh runs must not silently accept a blob collision. Resume can
+          // accept an existing key only after the portable size/hash HEAD check.
+          if (isResume && (await verifyExisting())) {
+            persistFile(sessionId, it.localPath, { state: 'done' });
+            return;
+          }
+          throw err;
         }
         // A user cancel or a sibling lane's fatal failure aborts the signal;
         // don't retry an aborted request — let the run unwind.

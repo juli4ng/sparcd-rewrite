@@ -22,7 +22,7 @@ export type Deployment = {
 export type Media = {
   mediaId: string;
   deploymentId: string;
-  mediaPath: string; // full S3 object key under UploadBlobs/
+  mediaPath: string; // full S3 object key under the upload prefix
   fileName: string; // local filename
   timestamp: string; // ISO, from EXIF
   mimeType: string; // "image/jpeg"

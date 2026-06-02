@@ -30,6 +30,7 @@ export function processBatch(
 
   const size = Math.min(poolSize, Math.max(1, items.length));
   const workers: Worker[] = [];
+  const active = new Map<Worker, ProcessRequest>();
 
   const finishIfDrained = () => {
     if (inFlight === 0 && next >= items.length) {
@@ -45,6 +46,7 @@ export function processBatch(
     }
     const item = items[next++];
     inFlight++;
+    active.set(worker, item);
     onStart(item.id);
     worker.postMessage(item);
   };
@@ -55,12 +57,22 @@ export function processBatch(
     });
     worker.onmessage = (e: MessageEvent<ProcessResponse>) => {
       inFlight--;
+      active.delete(worker);
       if (!cancelled) onResult(e.data);
       feed(worker);
     };
-    worker.onerror = () => {
-      // A worker-level crash drops its current file; keep the batch moving.
+    worker.onerror = (err) => {
+      // Surface a worker-level crash as a per-file processing error so the
+      // inspect gate can show "needs attention" instead of hanging forever.
+      const item = active.get(worker);
+      active.delete(worker);
       inFlight--;
+      if (!cancelled && item) {
+        onResult({
+          id: item.id,
+          error: err.message || 'Worker crashed while processing this file',
+        });
+      }
       feed(worker);
     };
     workers.push(worker);

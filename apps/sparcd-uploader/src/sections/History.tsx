@@ -76,16 +76,29 @@ export function History() {
 
   const launch = useCallback(
     async (batch: BatchRecord, attached: Map<string, File>, probs: ReconcileProblem[]) => {
-      setProblems(probs);
-      if (attached.size === 0) {
-        setMessage('No source files could be reattached — nothing to resume.');
-        return;
-      }
       const session = await loadSession(batch.id);
       if (!session) {
         setMessage('Session record is missing.');
         return;
       }
+      const missingRequired = session.files.filter((f) => f.state !== 'done' && !attached.has(f.localPath));
+      if (missingRequired.length > 0) {
+        setProblems([
+          ...probs,
+          ...missingRequired.map((f) => ({
+            localPath: f.localPath,
+            fileName: f.fileName,
+            reason: 'required for resume but not reattached',
+          })),
+        ]);
+        setMessage(
+          `${missingRequired.length} pending or failed source file${
+            missingRequired.length === 1 ? '' : 's'
+          } could not be reattached. Reselect the original folder before resuming.`,
+        );
+        return;
+      }
+      setProblems(probs);
       setActive(batch.id);
       setMessage(null);
       const run = resumeUpload(
@@ -217,8 +230,7 @@ export function History() {
       {problems.length > 0 && (
         <div className="border border-warn/40 bg-paper px-3 py-2.5 space-y-1">
           <p className="font-body text-[13px] text-warn">
-            {problems.length} file{problems.length === 1 ? '' : 's'} could not be reconciled and will be
-            skipped:
+            {problems.length} file{problems.length === 1 ? '' : 's'} could not be reconciled:
           </p>
           <ul className="font-mono text-[11px] text-inkSoft max-h-32 overflow-auto">
             {problems.slice(0, 50).map((p) => (
