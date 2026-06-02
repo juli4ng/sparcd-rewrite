@@ -4,6 +4,7 @@ import type { ScannedFile } from './lib/scanFiles';
 import type { ProcessResponse } from './lib/processPool';
 import type { FileAccessMode } from './lib/db';
 import { validateBatch, type FileValidation } from './lib/validation';
+import { clearClientCache } from './lib/s3';
 
 export type Section = 'new' | 'history' | 'settings';
 export type WizardStep = 'drop' | 'inspect' | 'assign' | 'upload';
@@ -25,6 +26,7 @@ export type FileEntry = ScannedFile & {
 
 type UploaderState = {
   s3Config: S3Config | null;
+  connectionId: number; // increments on connect/disconnect to scope client-side caches
   section: Section;
   theme: Theme;
   step: WizardStep;
@@ -69,6 +71,7 @@ const toEntry = (f: ScannedFile): FileEntry => ({ ...f, processState: 'queued' }
 
 export const useStore = create<UploaderState>((set) => ({
   s3Config: null,
+  connectionId: 0,
   section: 'new',
   theme: 'light',
   step: 'drop',
@@ -86,10 +89,20 @@ export const useStore = create<UploaderState>((set) => ({
   dryRun: true,
   uploadConcurrency: 8,
 
-  connect: (config) => set({ s3Config: config, selectedLocationKey: null, selectedBucket: null }),
-  disconnect: () =>
-    set({
+  connect: (config) => {
+    clearClientCache();
+    set((s) => ({
+      s3Config: config,
+      connectionId: s.connectionId + 1,
+      selectedLocationKey: null,
+      selectedBucket: null,
+    }));
+  },
+  disconnect: () => {
+    clearClientCache();
+    set((s) => ({
       s3Config: null,
+      connectionId: s.connectionId + 1,
       section: 'new',
       step: 'drop',
       files: [],
@@ -98,7 +111,8 @@ export const useStore = create<UploaderState>((set) => ({
       fileAccessMode: 'reselect-required',
       selectedLocationKey: null,
       selectedBucket: null,
-    }),
+    }));
+  },
   setSection: (section) => set({ section }),
   toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
   setStep: (step) => set({ step }),

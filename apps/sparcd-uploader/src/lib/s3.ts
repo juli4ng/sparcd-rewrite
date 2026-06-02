@@ -12,19 +12,19 @@ import { LOCATIONS_KEY, parseLocations, type LocationsParse } from './locations'
 // user's IAM policy and bucket CORS decide what the app can actually touch.
 const RUNTIME_BUCKET_SCOPE = ['*'];
 
-// Cache the client by a stable identity of the connection so repeated reads
-// (e.g. revisiting Assign) reuse one SDK client.
-let cached: { key: string; client: SafeS3Client } | null = null;
+// Cache the client for the active connection object only. This preserves the
+// UX benefit of SDK client reuse while avoiding stale credential reuse after a
+// reconnect, and it does not put raw secrets into cache keys.
+let cached: { config: S3Config; client: SafeS3Client } | null = null;
 
-function configKey(cfg: S3Config): string {
-  return `${cfg.endpoint}|${cfg.region}|${cfg.accessKey}|${cfg.forcePathStyle}|${cfg.secure}`;
+export function clearClientCache(): void {
+  cached = null;
 }
 
 export function getClient(cfg: S3Config): SafeS3Client {
-  const key = configKey(cfg);
-  if (cached?.key === key) return cached.client;
+  if (cached?.config === cfg) return cached.client;
   const client = new SafeS3Client(cfg, RUNTIME_BUCKET_SCOPE, RUNTIME_BUCKET_SCOPE);
-  cached = { key, client };
+  cached = { config: cfg, client };
   return client;
 }
 

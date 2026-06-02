@@ -11,6 +11,7 @@ const sectionLabel = 'font-[600] text-[11px] tracking-[0.16em] uppercase text-in
 
 export function Upload() {
   const s3Config = useStore((s) => s.s3Config);
+  const connectionId = useStore((s) => s.connectionId);
   const setStep = useStore((s) => s.setStep);
   const files = useStore((s) => s.files);
   const uploaderUser = useStore((s) => s.uploaderUser);
@@ -25,8 +26,8 @@ export function Upload() {
   const fileAccessMode = useStore((s) => s.fileAccessMode);
   const dirHandle = useStore((s) => s.dirHandle);
 
-  const { data: locData } = useLocations(s3Config);
-  const collections = useCollections(s3Config);
+  const { data: locData } = useLocations(s3Config, connectionId);
+  const collections = useCollections(s3Config, connectionId);
 
   const slug = sanitizeUploaderUser(uploaderUser);
   const location = locData?.locations.find((l) => l.key === selectedLocationKey) ?? null;

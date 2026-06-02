@@ -8,9 +8,9 @@ import { fetchLocations, type LocationsResult } from './s3';
  * but section switches and Assign revisits hit the cache. Locations change
  * rarely, so a long stale time avoids redundant reads.
  */
-export function useLocations(cfg: S3Config | null) {
+export function useLocations(cfg: S3Config | null, connectionId: number) {
   return useQuery<LocationsResult>({
-    queryKey: ['locations', cfg?.endpoint, cfg?.accessKey],
+    queryKey: ['locations', connectionId, cfg?.endpoint],
     queryFn: () => fetchLocations(cfg!),
     enabled: !!cfg,
     staleTime: 5 * 60 * 1000,

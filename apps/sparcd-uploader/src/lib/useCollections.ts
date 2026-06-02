@@ -3,9 +3,9 @@ import type { S3Config } from '@sparcd/types';
 import { listCollections, fetchCollectionName, type CollectionRef } from './s3';
 
 /** List the collection buckets for the connected endpoint (cached per endpoint). */
-export function useCollections(cfg: S3Config | null) {
+export function useCollections(cfg: S3Config | null, connectionId: number) {
   return useQuery<CollectionRef[]>({
-    queryKey: ['collections', cfg?.endpoint, cfg?.accessKey],
+    queryKey: ['collections', connectionId, cfg?.endpoint],
     queryFn: () => listCollections(cfg!),
     enabled: !!cfg,
     staleTime: 5 * 60 * 1000,
@@ -14,9 +14,9 @@ export function useCollections(cfg: S3Config | null) {
 }
 
 /** Resolve the display name for the selected collection only (lazy, cached). */
-export function useCollectionName(cfg: S3Config | null, ref: CollectionRef | null) {
+export function useCollectionName(cfg: S3Config | null, connectionId: number, ref: CollectionRef | null) {
   return useQuery<string | null>({
-    queryKey: ['collectionName', ref?.key],
+    queryKey: ['collectionName', connectionId, ref?.key],
     queryFn: () => fetchCollectionName(cfg!, ref!),
     enabled: !!cfg && !!ref,
     staleTime: 30 * 60 * 1000,

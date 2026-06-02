@@ -23,6 +23,7 @@ function LocationsState({ message, tone }: { message: string; tone: 'mute' | 'wa
 
 export function Assign() {
   const s3Config = useStore((s) => s.s3Config);
+  const connectionId = useStore((s) => s.connectionId);
   const setStep = useStore((s) => s.setStep);
   const uploaderUser = useStore((s) => s.uploaderUser);
   const setUploaderUser = useStore((s) => s.setUploaderUser);
@@ -34,8 +35,8 @@ export function Assign() {
   const setSelectedBucket = useStore((s) => s.setSelectedBucket);
   const files = useStore((s) => s.files);
 
-  const { data, isLoading, isError, error } = useLocations(s3Config);
-  const collections = useCollections(s3Config);
+  const { data, isLoading, isError, error } = useLocations(s3Config, connectionId);
+  const collections = useCollections(s3Config, connectionId);
   const slug = sanitizeUploaderUser(uploaderUser);
 
   // Preselect the first collection the connected credentials can read.
@@ -49,7 +50,7 @@ export function Assign() {
 
   const collection =
     collections.data?.find((c) => c.key === selectedBucket || c.bucket === selectedBucket) ?? null;
-  const collectionName = useCollectionName(s3Config, collection);
+  const collectionName = useCollectionName(s3Config, connectionId, collection);
   const location = data?.locations.find((l) => l.key === selectedLocationKey) ?? null;
   const canContinue = !!selectedLocationKey && !!slug && !!collection;
 
