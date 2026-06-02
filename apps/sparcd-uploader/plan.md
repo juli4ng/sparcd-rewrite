@@ -39,6 +39,39 @@ doesn't lose work. After a closed tab, the app resumes automatically when
 the browser grants persistent file handles; otherwise it asks the user to
 reselect the same folder and reconciles by relative path, size, and hash.
 
+## Static BYO-S3 security contract
+
+This uploader is a **static browser app**. It has no backend service, no
+trusted server session, and no server-side environment variables available at
+runtime. Any security review must treat the browser bundle as untrusted client
+code.
+
+**Decision.** Users bring their own S3-compatible endpoint, credentials,
+settings bucket, and collection bucket. Official SPARC'd deployments use the
+same model: official credentials are scoped by IAM/provider policy and CORS,
+not by bucket names compiled into the app.
+
+**Enforceable controls.**
+
+- **IAM / provider policy** limits which buckets, prefixes, and S3 actions the
+  supplied credentials can use.
+- **Bucket CORS** limits which hosted app origins can make browser S3 calls.
+- **`@sparcd/s3-safe`** is the only S3 client boundary in the app. It exposes
+  read methods and immutable append-only writers. It exposes no delete, copy,
+  or overwrite API.
+- **Upload protocol controls** include dry-run-by-default, conditional writes,
+  portable `HEAD` size/hash verification, upload ordering, and
+  `UploadComplete.json`.
+
+**Non-controls.**
+
+- Build-time `VITE_*` bucket allowlists are not used for authorization. They
+  would not be enforceable in a static app and would break BYO-S3 users.
+- Client-side bucket discovery is not authorization. It only finds buckets that
+  the supplied credentials and CORS policy already expose.
+- UI warnings and dry-run defaults guide operators, but they do not replace IAM
+  policy or CORS.
+
 ## Stack
 
 Same shape as the tagger; additions reflect the upload-specific work.

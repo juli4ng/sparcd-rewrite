@@ -22,6 +22,35 @@ Runtime-discovered BYO-S3 uploader.
 - Dry-run is on by default. Wet uploads use the connected credentials directly;
   IAM and bucket CORS are the real access gates.
 
+## Static BYO-S3 Contract
+
+Fact: this app is a static SPA. It has no backend service, no server-side
+session, and no trusted server-side environment variables.
+
+Decision: users bring their own S3-compatible endpoint, credentials, settings
+bucket, and collection bucket. The app discovers usable buckets at runtime from
+the permissions granted to those credentials.
+
+Security controls:
+
+- IAM or provider policy limits which buckets, prefixes, and S3 actions the
+  credentials can use.
+- Bucket CORS controls whether this hosted web origin can call S3 from the
+  browser.
+- `@sparcd/s3-safe` is the only S3 client boundary in the app. It exposes read
+  methods and immutable append-only writers. It exposes no delete, copy, or
+  overwrite API.
+- Conditional writes, `HEAD` verification, dry-run-by-default, and completion
+  sentinels reduce accidental publish risk.
+
+Non-controls:
+
+- Build-time `VITE_*` bucket allowlists are not used for authorization.
+- Client-side bucket discovery is not authorization. It only finds buckets the
+  supplied credentials and CORS policy already expose.
+- Official SPARC'd hosting follows the same model. Official credentials must be
+  scoped by IAM/provider policy, not by static app configuration.
+
 ## Develop
 
 ```sh
