@@ -14,6 +14,7 @@ export function DropZone() {
   const setScanning = useStore((s) => s.setScanning);
   const scanning = useStore((s) => s.scanning);
   const [hover, setHover] = useState(false);
+  const [noneFound, setNoneFound] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function commit(
@@ -21,8 +22,13 @@ export function DropZone() {
     dirHandle: FileSystemDirectoryHandle | null = null,
   ) {
     setScanning(true);
+    setNoneFound(false);
     try {
-      setFiles(await scan(), dirHandle);
+      const scanned = await scan();
+      setFiles(scanned, dirHandle);
+      // An empty scan leaves us on the drop step; flag it so the user can tell
+      // the folder was read and simply held no JPEGs (e.g. all PNGs).
+      setNoneFound(scanned.length === 0);
     } finally {
       setScanning(false);
     }
@@ -67,11 +73,27 @@ export function DropZone() {
         onDragLeave={() => setHover(false)}
         onDrop={onDrop}
         className={`border ${
-          hover ? 'border-accent bg-accentSoft' : 'border-rule bg-panel'
+          hover
+            ? 'border-accent bg-accentSoft'
+            : noneFound
+              ? 'border-warn bg-panel'
+              : 'border-rule bg-panel'
         } px-8 py-16 text-center cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2`}
       >
         {scanning ? (
           <p className="font-body text-[15px] text-inkSoft">Scanning folder…</p>
+        ) : noneFound ? (
+          <>
+            <p className="font-display text-[20px] text-warn mb-1">No JPEGs in that folder</p>
+            <p className="font-body text-[14px] text-inkSoft mb-5">
+              The folder was read but held no <span className="font-mono">.jpg</span>/
+              <span className="font-mono">.jpeg</span> files. This tool uploads JPEG only — convert
+              PNGs first, then choose the folder again.
+            </p>
+            <span className="inline-block bg-ink text-paper border border-ink px-4 py-2 text-[14px] font-body font-[600]">
+              Choose another folder
+            </span>
+          </>
         ) : (
           <>
             <p className="font-display text-[20px] text-ink mb-1">Drop a folder of images</p>
