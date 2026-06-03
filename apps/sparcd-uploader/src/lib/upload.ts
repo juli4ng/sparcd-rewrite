@@ -105,11 +105,20 @@ const BASE_BACKOFF_MS = 500;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Clock-skew errors surface as a 403 but are worth retrying: against a
+// load-balanced MinIO, a single node that has drifted off NTP rejects a request
+// as skewed while its siblings accept it, so a retry usually lands on a healthy
+// node. (The front proxy stamps a correct Date header, so the SDK's own
+// clock-skew correction can't fix it — the app-level retry is what recovers.)
+const CLOCK_SKEW_CODES = new Set(['RequestTimeTooSkewed', 'RequestExpired', 'RequestInTheFuture']);
+
 // A 412 (precondition) or an access denial is never worth retrying; network
-// blips, 5xx, and 429 are. Default to transient only when we recognize it.
+// blips, 5xx, 429, and clock-skew are. Default to transient only when we
+// recognize it.
 function isTransient(err: unknown): boolean {
   if (err instanceof PreconditionFailedError) return false;
   const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  if (e.name && CLOCK_SKEW_CODES.has(e.name)) return true;
   const status = e.$metadata?.httpStatusCode;
   if (status === undefined) return true; // network/CORS/DNS — worth a retry
   if (status >= 500 || status === 429) return true;

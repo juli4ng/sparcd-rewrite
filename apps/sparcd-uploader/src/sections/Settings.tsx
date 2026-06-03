@@ -39,7 +39,7 @@ export function Settings() {
             <input
               value={uploaderUser}
               onChange={(e) => setUploaderUser(e.target.value)}
-              placeholder="e.g. Sara Malusa"
+              placeholder="e.g. John Doe"
               className="w-full border border-rule bg-paper px-3 py-2 font-body text-[14px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
             />
             <span className="block font-body text-[12px] text-inkMute mt-1.5">

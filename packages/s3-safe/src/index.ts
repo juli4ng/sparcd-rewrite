@@ -174,6 +174,12 @@ export class SafeS3Client {
       region: cfg.region,
       forcePathStyle: cfg.forcePathStyle,
       credentials: { accessKeyId: cfg.accessKey, secretAccessKey: cfg.secretKey },
+      // AWS SDK v3 ≥ 3.729 turns on flexible checksums by default: it signs
+      // `x-amz-checksum-mode` on GETs and attaches a CRC32 to PUTs. MinIO and
+      // other S3-compatible backends reject the latter, so we match the MinIO
+      // client and only checksum when a command explicitly requires it.
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
     });
   }
 
@@ -226,6 +232,30 @@ export class SafeS3Client {
       }
       token = res.IsTruncated ? res.NextContinuationToken : undefined;
     } while (token);
+  }
+
+  /**
+   * List the immediate "subfolders" under `prefix` (the `CommonPrefixes` of a
+   * delimited list). Lets callers enumerate e.g. upload folders without walking
+   * every object beneath them. Returned prefixes keep the trailing delimiter.
+   */
+  async listCommonPrefixes(bucket: string, prefix: string, delimiter = '/'): Promise<string[]> {
+    this.assertAllowed(bucket);
+    const prefixes: string[] = [];
+    let token: string | undefined;
+    do {
+      const res = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          Delimiter: delimiter,
+          ContinuationToken: token,
+        }),
+      );
+      for (const cp of res.CommonPrefixes ?? []) if (cp.Prefix) prefixes.push(cp.Prefix);
+      token = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (token);
+    return prefixes;
   }
 
   async getObject(bucket: string, key: string): Promise<Uint8Array> {

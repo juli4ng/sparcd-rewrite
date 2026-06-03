@@ -85,46 +85,126 @@ export async function fetchLocations(cfg: S3Config): Promise<LocationsResult> {
   return { ...parsed, settingsBucket };
 }
 
-export type CollectionRef = { key: string; bucket: string; uuid: string };
+export type CollectionRef = {
+  key: string;
+  bucket: string;
+  uuid: string;
+  name: string | null;
+  organization: string | null;
+};
 
-const COLLECTION_JSON =
-  /^Collections\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\/collection\.json$/;
+// A collection *is* a bucket named `sparcd-<uuid>`, and its marker lives at the
+// deterministic key `Collections/<uuid>/collection.json` (uuid = bucket name
+// minus this prefix). This mirrors the upstream SPARC'd `get_user_collections`.
+const COLLECTION_BUCKET_PREFIX = 'sparcd-';
 
-/** Discover collections by looking for `Collections/<uuid>/collection.json`. */
+/**
+ * Discover collections by reading the deterministic marker in each
+ * `sparcd-<uuid>` bucket. We never list the `Collections/` prefix — that walks
+ * every upload image and paginates into thousands of requests across all
+ * buckets. One small GET per candidate bucket also gives us the human-readable
+ * name for the picker, so no second round-trip is needed.
+ */
 export async function listCollections(cfg: S3Config): Promise<CollectionRef[]> {
   const client = getClient(cfg);
   const buckets = await client.listBuckets();
+  const candidates = buckets.filter(
+    (b) => b.startsWith(COLLECTION_BUCKET_PREFIX) && b.length > COLLECTION_BUCKET_PREFIX.length,
+  );
   const found: CollectionRef[] = [];
-  const seen = new Set<string>();
   await Promise.all(
-    buckets.map(async (bucket) => {
+    candidates.map(async (bucket) => {
+      const uuid = bucket.slice(COLLECTION_BUCKET_PREFIX.length).toLowerCase();
       try {
-        for await (const obj of client.listObjects(bucket, 'Collections/')) {
-          const m = obj.key.match(COLLECTION_JSON);
-          if (!m) continue;
-          const uuid = m[1].toLowerCase();
-          const key = `${bucket}::${uuid}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          found.push({ key, bucket, uuid });
-        }
+        const bytes = await client.getObject(bucket, `Collections/${uuid}/collection.json`);
+        const doc = JSON.parse(new TextDecoder().decode(bytes)) as {
+          nameProperty?: string;
+          organizationProperty?: string;
+        };
+        found.push({
+          key: `${bucket}::${uuid}`,
+          bucket,
+          uuid,
+          name: doc.nameProperty?.trim() || null,
+          organization: doc.organizationProperty?.trim() || null,
+        });
       } catch {
-        // Bucket is not readable/listable for collections, or CORS blocked it.
+        // No collection marker, or the bucket is unreadable / CORS-blocked.
       }
     }),
   );
-  return found.sort((a, b) => a.bucket.localeCompare(b.bucket) || a.uuid.localeCompare(b.uuid));
+  // Sort by display name so the picker reads alphabetically; fall back to bucket.
+  return found.sort(
+    (a, b) => (a.name ?? a.bucket).localeCompare(b.name ?? b.bucket) || a.uuid.localeCompare(b.uuid),
+  );
 }
 
-/** Read a collection's display name from its `collection.json`, or null. */
-export async function fetchCollectionName(cfg: S3Config, ref: CollectionRef): Promise<string | null> {
-  try {
-    const bytes = await getClient(cfg).getObject(ref.bucket, `Collections/${ref.uuid}/collection.json`);
-    const doc = JSON.parse(new TextDecoder().decode(bytes)) as { nameProperty?: string };
-    return doc.nameProperty?.trim() || null;
-  } catch {
-    return null;
+// Split one CSV line into fields. The live `deployments.csv` files are wildly
+// inconsistent — some rows are fully quoted (with `""` escaping), others are
+// bare — so we parse both forms rather than assume quoting.
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      fields.push(field);
+      field = '';
+    } else field += ch;
   }
+  fields.push(field);
+  return fields;
+}
+
+// Pull the deployed location ids out of a header-less `deployments.csv`.
+// location_id is column 1, but it's sometimes stored as the full
+// `<collection-uuid>:<location-id>` form, so we keep only the trailing id. The
+// `0000` "cleared coordinates" sentinel is dropped, matching the explorer.
+function deploymentLocationIds(csv: string): string[] {
+  const ids: string[] = [];
+  for (const line of csv.split('\n')) {
+    if (!line.trim()) continue;
+    const raw = parseCsvLine(line)[1]?.trim();
+    if (!raw) continue;
+    const id = raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1) : raw;
+    if (id && id !== '0000') ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * The location ids a collection has actually deployed, read from each upload's
+ * `Collections/<uuid>/Uploads/<upload>/deployments.csv`. Upload folders are
+ * enumerated with a delimiter (no image walk), then one small GET per upload.
+ */
+export async function listCollectionDeploymentLocationIds(
+  cfg: S3Config,
+  ref: CollectionRef,
+): Promise<string[]> {
+  const client = getClient(cfg);
+  const uploadDirs = await client.listCommonPrefixes(ref.bucket, `Collections/${ref.uuid}/Uploads/`);
+  const ids = new Set<string>();
+  await Promise.all(
+    uploadDirs.map(async (dir) => {
+      try {
+        const bytes = await client.getObject(ref.bucket, `${dir}deployments.csv`);
+        for (const id of deploymentLocationIds(new TextDecoder().decode(bytes))) ids.add(id);
+      } catch {
+        // Upload without a deployments.csv yet, or unreadable / CORS-blocked.
+      }
+    }),
+  );
+  return [...ids];
 }
 
 function translateReadError(err: unknown, bucket: string): Error {

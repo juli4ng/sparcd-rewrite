@@ -1,7 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useStore } from '../store';
 import { useLocations } from '../lib/useLocations';
-import { useCollections, useCollectionName } from '../lib/useCollections';
+import { useCollections, useCollectionDeployments } from '../lib/useCollections';
 import { DeploymentPicker } from '../components/DeploymentPicker';
 import { MetadataPreview } from '../components/MetadataPreview';
 import { sanitizeUploaderUser } from '../lib/normalize';
@@ -50,42 +50,116 @@ export function Assign() {
 
   const collection =
     collections.data?.find((c) => c.key === selectedBucket || c.bucket === selectedBucket) ?? null;
-  const collectionName = useCollectionName(s3Config, connectionId, collection);
-  const location = data?.locations.find((l) => l.key === selectedLocationKey) ?? null;
+
+  // Strict filter: the deployment picker only shows locations this collection
+  // has already deployed (derived from its uploads' deployments.csv).
+  const deployments = useCollectionDeployments(s3Config, connectionId, collection);
+  const collectionLocations = useMemo(() => {
+    if (!data?.locations || !deployments.data) return [];
+    const used = new Set(deployments.data);
+    return data.locations.filter((l) => used.has(l.id));
+  }, [data?.locations, deployments.data]);
+
+  // Drop a stale location selection when it isn't among the chosen collection's
+  // deployments (e.g. after switching collections).
+  useEffect(() => {
+    if (!deployments.data) return;
+    if (selectedLocationKey && !collectionLocations.some((l) => l.key === selectedLocationKey)) {
+      setSelectedLocationKey(null);
+    }
+  }, [collectionLocations, deployments.data, selectedLocationKey, setSelectedLocationKey]);
+
+  const location = collectionLocations.find((l) => l.key === selectedLocationKey) ?? null;
   const canContinue = !!selectedLocationKey && !!slug && !!collection;
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
       <section>
+        <h2 className={sectionLabel}>Target collection</h2>
+        {collections.isLoading && <LocationsState tone="mute" message="Discovering collections…" />}
+        {collections.isError && (
+          <LocationsState
+            tone="warn"
+            message={(collections.error as Error)?.message ?? 'Could not list collections.'}
+          />
+        )}
+        {collections.data && (
+          <div className="space-y-1.5">
+            {collections.data.length === 0 ? (
+              <LocationsState
+                tone="warn"
+                message="No collections found. The connected credentials must be able to read Collections/<uuid>/collection.json in a sparcd-<uuid> bucket, and that bucket must allow this web origin via CORS."
+              />
+            ) : (
+              <>
+                <select
+                  value={selectedBucket ?? ''}
+                  onChange={(e) => setSelectedBucket(e.target.value || null)}
+                  className="w-full border border-rule bg-paper px-3 py-2 font-body text-[14px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
+                >
+                  {collections.data.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.name ?? '(unnamed)'}
+                      {c.organization ? ` · ${c.organization}` : ''} — {c.bucket}
+                    </option>
+                  ))}
+                </select>
+                <p className="font-body text-[12px] text-inkMute">
+                  {collection?.name ? (
+                    <>
+                      <span className="text-inkSoft">{collection.name}</span> ·{' '}
+                    </>
+                  ) : null}
+                  Discovered from{' '}
+                  <span className="font-mono">Collections/{collection?.uuid ?? '<uuid>'}/collection.json</span>
+                  . Uploads land in this bucket under{' '}
+                  <span className="font-mono">Collections/{collection?.uuid ?? '<uuid>'}/Uploads/</span>.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section>
         <h2 className={sectionLabel}>Deployment</h2>
-        {isLoading && <LocationsState tone="mute" message="Loading locations…" />}
+        {(isLoading || (collection && deployments.isLoading)) && (
+          <LocationsState tone="mute" message="Loading this collection's deployments…" />
+        )}
         {isError && (
           <LocationsState
             tone="warn"
             message={(error as Error)?.message ?? 'Could not load locations.'}
           />
         )}
-        {data && (
+        {data && deployments.isError && (
+          <LocationsState
+            tone="warn"
+            message={(deployments.error as Error)?.message ?? 'Could not read this collection’s deployments.'}
+          />
+        )}
+        {data && !collection && (
+          <LocationsState tone="mute" message="Select a target collection first." />
+        )}
+        {data && collection && deployments.data && (
           <div className="space-y-2">
-            <DeploymentPicker
-              locations={data.locations}
-              value={selectedLocationKey}
-              onChange={setSelectedLocationKey}
-            />
+            {collectionLocations.length === 0 ? (
+              <LocationsState
+                tone="warn"
+                message="This collection has no deployments yet. Only locations it has already uploaded to can be selected here."
+              />
+            ) : (
+              <DeploymentPicker
+                locations={collectionLocations}
+                value={selectedLocationKey}
+                onChange={setSelectedLocationKey}
+              />
+            )}
             <p className="font-body text-[12px] text-inkMute">
-              <span className="font-mono text-inkSoft">{data.locations.length}</span> locations from{' '}
-              <span className="font-mono text-inkSoft">{data.settingsBucket}</span>
-              {'/'}
-              <span className="font-mono text-inkSoft">Settings/locations.json</span>
-              {data.skipped.length > 0 && (
-                <>
-                  {' · '}
-                  <span className="text-warn">{data.skipped.length}</span> skipped (
-                  {data.skipped[0].reason}
-                  {data.skipped.length > 1 ? ', …' : ''})
-                </>
-              )}
-              . Each becomes <span className="font-mono">deployment_id</span> ={' '}
+              <span className="font-mono text-inkSoft">{collectionLocations.length}</span> of{' '}
+              <span className="font-mono text-inkSoft">{data.locations.length}</span> locations —
+              filtered to those <span className="font-mono">{collection.uuid}</span> has already deployed.
+              Each becomes <span className="font-mono">deployment_id</span> ={' '}
               <span className="font-mono">&lt;collection-uuid&gt;:&lt;location-id&gt;</span>.
             </p>
           </div>
@@ -97,7 +171,7 @@ export function Assign() {
         <input
           value={uploaderUser}
           onChange={(e) => setUploaderUser(e.target.value)}
-          placeholder="e.g. Sara Malusa"
+          placeholder="e.g. John Doe"
           className="w-full border border-rule bg-paper px-3 py-2 font-body text-[14px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
         />
         <p className="font-body text-[12px] text-inkMute mt-1.5">
@@ -123,52 +197,6 @@ export function Assign() {
         <p className="font-body text-[12px] text-inkMute mt-1.5">
           Saved to <span className="font-mono">UploadMeta.json</span> as the upload description.
         </p>
-      </section>
-
-      <section>
-        <h2 className={sectionLabel}>Target collection</h2>
-        {collections.isLoading && <LocationsState tone="mute" message="Discovering collections…" />}
-        {collections.isError && (
-          <LocationsState
-            tone="warn"
-            message={(collections.error as Error)?.message ?? 'Could not list collections.'}
-          />
-        )}
-        {collections.data && (
-          <div className="space-y-1.5">
-            {collections.data.length === 0 ? (
-              <LocationsState
-                tone="warn"
-                message="No collection markers found. The connected credentials must be able to list a bucket containing Collections/<uuid>/collection.json, and that bucket must allow this web origin via CORS."
-              />
-            ) : (
-              <>
-                <select
-                  value={selectedBucket ?? ''}
-                  onChange={(e) => setSelectedBucket(e.target.value || null)}
-                  className="w-full border border-rule bg-paper px-3 py-2 font-mono text-[13px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
-                >
-                  {collections.data.map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.bucket} · {c.uuid}
-                    </option>
-                  ))}
-                </select>
-                <p className="font-body text-[12px] text-inkMute">
-                  {collectionName.data ? (
-                    <>
-                      <span className="text-inkSoft">{collectionName.data}</span> ·{' '}
-                    </>
-                  ) : null}
-                  Discovered from{' '}
-                  <span className="font-mono">Collections/{collection?.uuid ?? '<uuid>'}/collection.json</span>
-                  . Uploads land in this bucket under{' '}
-                  <span className="font-mono">Collections/{collection?.uuid ?? '<uuid>'}/Uploads/</span>.
-                </p>
-              </>
-            )}
-          </div>
-        )}
       </section>
 
       <section>
