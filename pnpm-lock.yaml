@@ -31,6 +31,9 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.59.0
         version: 5.100.14(react@18.3.1)
+      '@tanstack/react-virtual':
+        specifier: ^3.10.8
+        version: 3.14.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       dexie:
         specifier: ^4.0.8
         version: 4.4.3

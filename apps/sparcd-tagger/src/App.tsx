@@ -5,6 +5,7 @@ import { Chrome } from './components/Chrome';
 import { Browse } from './sections/Browse';
 import { Tag } from './sections/Tag';
 import { Settings } from './sections/Settings';
+import { Recovery } from './sections/Recovery';
 import { Placeholder } from './sections/Placeholder';
 
 // Dev-only, non-secret prefill (endpoint only). Secrets are never prefilled.
@@ -42,11 +43,7 @@ export function App() {
             Choose an upload in Browse to start tagging.
           </Placeholder>
         ))}
-      {section === 'history' && (
-        <Placeholder title="History" phase="P5 – P6">
-          Sync history and the snapshot/version recovery view appear here.
-        </Placeholder>
-      )}
+      {section === 'history' && <Recovery />}
       {section === 'settings' && <Settings />}
     </Chrome>
   );

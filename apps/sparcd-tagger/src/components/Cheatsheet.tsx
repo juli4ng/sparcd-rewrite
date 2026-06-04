@@ -13,6 +13,7 @@ const GROUPS: { title: string; rows: Shortcut[] }[] = [
       { keys: ['K', '↑'], action: 'Previous image' },
       { keys: ['⇧J'], action: 'Next burst' },
       { keys: ['⇧K'], action: 'Previous burst' },
+      { keys: ['Enter'], action: 'Open focused image (Overview)' },
     ],
   },
   {

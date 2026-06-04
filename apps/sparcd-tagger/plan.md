@@ -1036,6 +1036,98 @@ foundation for full multi-select — extend the `Set<number>` selection with
 range/additive gestures and route `applyTagMany`/`detagMany` through them. The
 recovery view (local-only at P3) reads `listDirtyDrafts` from `src/lib/db.ts`.
 
+### P3 — implementation report (done)
+
+Status: **complete, local-only.** `pnpm --filter sparcd-tagger check` (tsc),
+`pnpm test` (camtrap 39 + uploader 36 + **tagger 20**, the 5 new being the
+selection model), and `pnpm --filter sparcd-tagger build` all pass. Still
+nothing writes to S3 — the draft store only mutates Dexie/Zustand and `s3.ts`
+keeps read scope. New dep: `@tanstack/react-virtual@^3.10.8` (already in the
+lockfile from the uploader; pulled into the tagger's `package.json`).
+
+**Overview / Focus mode split (`src/sections/Tag.tsx`).** The Tag workspace now
+has a thin toolbar with two segmented controls: **Overview ⟷ Focus** and, in
+Overview, **▦ Grid ⟷ ☰ List** — implementing the plan's architecture where
+Overview is the primary bulk surface and Focus is the single-image drill-in.
+- **Overview mode**: `[Overview | SpeciesPanel]` (2-col). The Overview fills the
+  main area as a virtualized grid (default) or list. Bulk-select, then one
+  species key/click applies to the whole selection.
+- **Focus mode**: `[Overview(list, narrow) | focus image | SpeciesPanel]`
+  (3-col) — the careful single-image workflow (pan target, metadata bar, Detag).
+  Double-clicking a cell (or `Enter`) in Overview drills into Focus on that
+  image.
+The selection readout + "N unsaved · discard" moved from the old strip header
+into the toolbar.
+
+**Virtualized Overview (`src/components/Overview.tsx`).** One reusable component
+backs both the wide Overview and the narrow Focus-mode strip. It flattens the
+burst grouping into a single array of `band` / `row` items (a `row` holds one
+image in list mode, up to `cols` images in grid mode) and drives a single
+`@tanstack/react-virtual` vertical virtualizer, so a 5,000-image upload only
+mounts the visible cells (the 60fps perf target). Grid columns derive from the
+measured container width via a `ResizeObserver` hook. `rowOfImage[]` maps an
+image index back to its flat row so keyboard focus calls `scrollToIndex(...,
+{align:'auto'})` — visible cells don't jump. Each cell subscribes only to its
+own draft (`useDraftStore((s) => s.drafts[key])`), so tagging one image never
+re-renders its neighbours on top of virtualization already bounding the count.
+**Trade-off:** the P1/P2 strip had CSS-`sticky` burst bands; in the virtualized
+(absolutely-positioned) list true stickiness doesn't work, so bands now scroll
+inline. If a persistent "current burst" header is wanted, add a separate sticky
+overlay reading `grouping.burstOf[focus]` — deferred.
+
+**Full multi-select (`src/lib/selection.ts` + `Tag.tsx` `pick`).** Pure,
+tested helpers (`rangeSet`, `toggleIndex`, `burstIndexSet`,
+`isRangeFullySelected`) extend the `Set<number>` model. Mouse gestures on a
+cell: plain click = single (focus + clear selection + set anchor); **Shift+click
+= range** from the anchor; **Cmd/Ctrl+click = additive toggle**; the band
+**select** button and `Cmd/Ctrl+A` = whole-burst. An `anchor` index (the last
+single pick / nav target) is the base for Shift-range; `J`/`K`/`Shift+J/K` all
+re-anchor through a shared `focusMove`. All paths route through the existing
+`applyTagMany`/`detagMany`/`setQuestionableMany` batch store methods (one Zustand
+`set`, one debounced Dexie write per target).
+
+**Effective-tag helper extracted (`src/lib/effective.ts`).** `effectiveOf`
+(draft-wins-over-base) + `isEditedFromBase` moved out of `Tag.tsx` so the
+Overview cells and the Focus view read tags identically. No behaviour change.
+
+**Local recovery view (`src/sections/Recovery.tsx`, History tab).** Replaces the
+History placeholder. Reads `listDirtyDrafts()` and groups dirty drafts by upload
+(`bucket::uploadPrefix`), showing per-upload unsaved/tagged counts and last-edit
+time. **Open →** sets `selectCollection(bucket::uuid)` then
+`selectUpload(prefix)` (which switches to the Tag workspace); **Discard** runs
+the draft store's `discardUpload`. It re-derives when the in-memory `drafts`
+change so edits/discards refresh the list live. This is the **local-only**
+recovery the plan scopes to P3; the S3 snapshot/version recovery (loading prior
+canonical snapshots) stays P5 and is noted as such in the view's copy.
+
+**Tests.** `test/selection.test.ts` covers the four selection helpers
+(range both directions, non-mutating toggle, burst membership + out-of-range,
+fully-selected predicate). The data-shape contracts remain in `@sparcd/camtrap`;
+virtualization/gesture wiring is UI and verified by build + manual check.
+
+**Deliberate deferrals (for the P4+ agent):**
+- **Sticky burst bands in the virtualized view** (see trade-off above) — bands
+  scroll inline now.
+- **Time-correction UI still unbuilt** (carried from P1/P2). `drafts.timeOverride`
+  + `uploads.timeOffset` persist; the offset/override editors and feeding
+  corrected timestamps into `groupBursts` remain a separate pass.
+- **`react-hotkeys-hook` / `react-zoom-pan-pinch` still unused.** The single
+  ref-backed `window` handler carries the keyboard set; the Focus image is a
+  plain `object-contain <img>` (no pan/zoom yet) — a Focus-view polish task.
+- Live CORS / `species.json` presence remains **unverified** (no credentials in
+  this workspace) — same `.env` + `pnpm --filter sparcd-tagger dev` check P0–P2
+  flagged. Eyeball grid scrolling and multi-select against a real upload there.
+
+**For the P4 agent:** the local-only build is feature-complete (Overview/Focus,
+grid/list, full multi-select, recovery). P4 is the first S3 write path: add
+`replaceIfUnchanged` to `@sparcd/s3-safe`, the conditional canonical
+replacement + immutable snapshot + per-object resume journal sync, and ground
+drafts on the canonical ETags/hashes (the `base*ETag/Hash` fields already exist
+in the Dexie v1 schema, so no schema bump). The merge helpers in
+`@sparcd/camtrap` (`mergeMedia`/`mergeObservations`/`applyUploadMetaEdit`) and
+the `MediaEdit`/`ObservationInput` shapes are ready. Keep all S3 access behind
+`src/lib/s3.ts`; do not import `@aws-sdk/client-s3` in app code.
+
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key
