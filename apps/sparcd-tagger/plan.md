@@ -13,9 +13,9 @@ replacement/add-on for the taggers in
 the primary contract: a user can tag an image in this tool, open and re-tag
 that same image in the Java app, then preview/query it in `sparcd-web` or the
 static marimo notebook. Therefore S3 sync updates the canonical upload-level
-`observations.csv` and `UploadMeta.json` that those tools already read.
-Versioned append-only copies are allowed for audit/recovery, but they are not
-the compatibility output.
+`media.csv`, `observations.csv`, and `UploadMeta.json` that those tools already
+read. Versioned append-only copies are allowed for audit/recovery, but they are
+not the compatibility output.
 
 > **How the upstream reader actually surfaces species (verified by the
 > uploader's P3, `../sparcd-uploader/plan.md` "CRITICAL verification
@@ -43,6 +43,11 @@ the compatibility output.
   canonical metadata updates. P0 now starts with shared Vitest contract tests
   and golden fixtures for uploader + tagger data handling before any S3 write
   path is built.
+- **2026-06-04** — Rechecked the Java app save path. Sync now treats
+  `media.csv`, `observations.csv`, and `UploadMeta.json` as the canonical
+  replacement unit; timestamp corrections update media timestamp col 4;
+  `imagesWithSpecies` follows Java's running delta; `editComments` are
+  mandatory; and Java's unconditional overwrites are documented honestly.
 
 ## Design references
 
@@ -133,7 +138,7 @@ one reviewed extension because Java-app-compatible tagging must replace
 canonical metadata. The single, blessed S3 boundary; every tool that touches
 storage imports it. The tagger uses the read methods, `writeImmutable` for
 audit snapshots, and a new conditional replacement method for canonical
-`observations.csv` / `UploadMeta.json`. It does **not** need
+`media.csv` / `observations.csv` / `UploadMeta.json`. It does **not** need
 `writeImmutableStream` (that is the uploader's per-file multipart writer; the
 tagger never streams large blobs). Shipped surface plus required extension:
 
@@ -159,7 +164,8 @@ tagger never streams large blobs). Shipped surface plus required extension:
    - `replaceIfUnchanged(bucket, key, body, { etag, contentType })` →
      conditional `PutObject` with `IfMatch: <etag>` for canonical metadata
      replacement. This is a narrow compatibility exception for
-     `observations.csv` and `UploadMeta.json`, not a general overwrite API.
+     `media.csv`, `observations.csv`, and `UploadMeta.json`, not a general
+     overwrite API.
      It throws a typed conflict if the remote object changed after the draft
      was loaded.
 3. **No destructive APIs exposed** — no `delete*` or `copy*`. Direct
@@ -180,10 +186,15 @@ defeat the safety design.
 
 **`IfMatch` backend support.** Canonical compatibility sync additionally
 requires conditional replacement with `IfMatch` against the reviewed ETag for
-`observations.csv` and `UploadMeta.json`. P0/P4 tests must prove the wrapper
-sends the header, treats stale ETags as typed conflicts, and does not fall
-back to an unconditional PUT. Live browser CORS must expose enough `HEAD`
-metadata for this check to work on the target endpoint.
+`media.csv`, `observations.csv`, and `UploadMeta.json`. P0/P4 tests must prove
+the wrapper sends the header, treats stale ETags as typed conflicts, and does
+not fall back to an unconditional PUT. Live browser CORS must expose enough
+`HEAD` metadata for this check to work on the target endpoint.
+
+This is stricter than the Java desktop app, which writes with unconditional
+`PutObject` and performs no ETag/concurrency check. Tagger `IfMatch` protects
+tagger-vs-tagger and tagger-vs-uploader/static-tool writes; it cannot prevent a
+concurrent or later Java save from overwriting canonical tagger output.
 
 Endpoint config is the same shape for all three backends:
 
@@ -235,10 +246,11 @@ fixtures so uploader and tagger tests prove the same data contract.
     below). There is **no dedicated `tags` column**; everything bracketed
     lands in `comments`.
 - Merge helpers: **to be added in P0/P1**. Given canonical media +
-  observations and local draft edits, replace all observation rows for the
-  edited media IDs, preserve unrelated rows, filter zero-count rows the same
-  way `sparcd-web` does, and recompute `imagesWithSpecies` for
-  `UploadMeta.json`.
+  observations and local draft edits, replace the media row and all observation
+  rows for the edited media IDs, preserve unrelated rows, filter zero-count
+  rows the same way `sparcd-web` does, update media timestamp col 4 when time
+  corrections are synced, and update `UploadMeta.json` with Java-compatible
+  `imagesWithSpecies` delta semantics.
 - Validators: schema checks, lat/lng sanity (the swapped-column bug we hit
   in the marimo notebook), row-count checks, and tag-string parser for the
   `[COMMONNAME:Owl]` format.
@@ -291,7 +303,9 @@ one app:
   `sparcd-uploader`.
 - `packages/camtrap/test/fixtures/tagger-edited-v016/` — expected canonical
   output after common tagger operations: add species, retag species, detag an
-  image, multi-species rows, Ghost (`Casper`), timestamp correction, and
+  image, multi-species rows, Ghost (`Casper`), timestamp correction in
+  `media.csv` col 4 and observation col 4, Java-compatible
+  `UploadMeta.json.imagesWithSpecies` delta, mandatory `editComments`, and
   requested-species marker in comments.
 
 Fixtures should be small enough for fast tests but large enough to cover
@@ -306,15 +320,28 @@ unrelated row that must survive every merge unchanged.
   Camtrap data and exposes an empty canonical `observations.csv` base for the
   tagger.
 - **Tagger merge contract.** Applying draft edits to canonical observations
-  produces exactly the `tagger-edited-v016` golden output.
+  and media produces exactly the `tagger-edited-v016` golden output.
 - **Retro-compatibility contract.** The edited golden output can be read by
   lightweight Java-compatible and `sparcd-web`-compatible parsers in tests:
   species lives in observation col 8, count in col 9, common name in col 19
   as `[COMMONNAME:<name>]`, and media IDs match the full object keys used by
   `media.csv`.
-- **UploadMeta contract.** `imagesWithSpecies` is recomputed as the number of
-  media items with at least one positive-count observation row, matching Java
-  and `sparcd-web`.
+- **Timestamp display contract.** Corrected capture time is written to
+  `media.csv` col 4 because Java and `sparcd-web` decorate displayed image
+  timestamps from media rows. Observation col 4 is also updated for edited
+  observation rows, but it is not enough by itself.
+- **UploadMeta contract.** `imagesWithSpecies` follows the Java save delta:
+  `prior - detaggedCount + retaggedCount`, where detagged means "was tagged,
+  now species-present is empty" and retagged means "was untagged, now
+  species-present is non-empty." This deliberately matches Java's maintained
+  tally, even if a stored `UploadMeta.json` has drifted from a clean recompute.
+  Tests include a drifted-value fixture so the choice is explicit. A future
+  admin repair flow may recompute and reconcile drift, but normal tagger sync
+  does not.
+- **Edit comment contract.** Every successful canonical sync appends an
+  `UploadMeta.json.editComments` entry in the Java style:
+  `Edited by <user> on <timestamp>`, where `<timestamp>` uses Java's
+  `uuuu.MM.dd.HH.mm.ss` format.
 - **No accidental data loss.** Retag/detag tests prove the merge only replaces
   rows for edited media IDs and never drops unrelated observations,
   deployments, or media rows.
@@ -349,6 +376,7 @@ Settings/species.json  ─fetch─►  Fuse index in memory                  │
                                                ▼
                          immutable snapshot + conditional canonical replace
                                                │
+                                               ├─ replaceIfUnchanged() → <uploadPrefix>/media.csv
                                                ├─ replaceIfUnchanged() → <uploadPrefix>/observations.csv
                                                └─ replaceIfUnchanged() → <uploadPrefix>/UploadMeta.json
 ```
@@ -436,9 +464,10 @@ different model (server-issued token); we don't share UI with them by design
 - **Dexie schema** v1:
   - `drafts` table:
     `{ id (bucket+uploadPrefix+mediaPath), bucket, uploadPrefix, mediaPath,
-    baseObservationsETag, baseObservationsHash, baseUploadMetaETag,
-    baseUploadMetaHash, auditSnapshotKey, label, count, freeTags,
-    requestedSpecies, questionable, timeOverride, lastEdited, dirty }`
+    baseMediaETag, baseMediaHash, baseObservationsETag,
+    baseObservationsHash, baseUploadMetaETag, baseUploadMetaHash,
+    auditSnapshotKey, label, count, freeTags, requestedSpecies, questionable,
+    timeOverride, lastEdited, dirty }`
     (`timeOverride` = optional corrected timestamp for this one image, on
     top of the upload offset; null when unset.)
     `label` holds the applied species **or** a non-animal label like
@@ -451,8 +480,8 @@ different model (server-issued token); we don't share UI with them by design
     label through the same path, not a separate flag.
   - `uploads` table:
     `{ id (bucket+uploadPrefix), bucket, uploadPrefix, loadedAt,
-    observationsETag, observationsHash, uploadMetaETag, uploadMetaHash,
-    timeOffset }`
+    mediaETag, mediaHash, observationsETag, observationsHash, uploadMetaETag,
+    uploadMetaHash, timeOffset }`
     (`timeOffset` = signed Δ y/mo/d/h/m/s applied to every image in the
     upload; null when unset.)
   - `sessions` table:
@@ -461,10 +490,11 @@ different model (server-issued token); we don't share UI with them by design
 - **Grounding rule.** The uploader **always writes an empty canonical
   `observations.csv`** on initial upload (its open question resolved), so a
   stable base file is guaranteed — no absent-file case to handle. Every draft
-  is grounded on the canonical upload-level `observations.csv` plus
-  `UploadMeta.json` loaded at session start. Sync-time conflict detection
-  compares current remote ETag/hash values for both files against the stored
-  base values; mismatch triggers the conflict view before any canonical write.
+  is grounded on the canonical upload-level `media.csv`, `observations.csv`,
+  and `UploadMeta.json` loaded at session start. Sync-time conflict detection
+  compares current remote ETag/hash values for all three files against the
+  stored base values; mismatch triggers the conflict view before any canonical
+  write.
 - **`requestedSpecies` field.** When a tagger needs a species not in
   `Settings/species.json`, the combobox lets them tag with a free-text
   `requestedSpecies` string plus the existing `freeTags`. The sync export
@@ -485,29 +515,36 @@ different model (server-issued token); we don't share UI with them by design
 
 - "Sync" button is the only path that writes to S3.
 - Pre-write:
-  - `HEAD` + load canonical `<uploadPrefix>/observations.csv` and
-    `<uploadPrefix>/UploadMeta.json`.
-  - If either ETag/hash differs from the draft base, enter the conflict view:
-    reload remote, show local-vs-remote row diffs, and require the user to
-    merge or discard local edits before retrying.
-  - Diff local drafts against canonical observations. Show a confirmation
-    dialog: N additions, M modifications, D removals. A removal means "remove
-    this species row from this media item" and is required for re-tagging
-    compatibility; it is not an object delete.
+  - `HEAD` + load canonical `<uploadPrefix>/media.csv`,
+    `<uploadPrefix>/observations.csv`, and `<uploadPrefix>/UploadMeta.json`.
+  - If any ETag/hash differs from the draft base, enter the conflict view:
+    reload remote, show local-vs-remote media/observation/meta diffs, and
+    require the user to merge or discard local edits before retrying.
+  - Diff local drafts against canonical media and observations. Show a
+    confirmation dialog: timestamp corrections, N additions, M modifications,
+    D removals. A removal means "remove this species row from this media item"
+    and is required for re-tagging compatibility; it is not an object delete.
   - Write immutable audit snapshots of the pre-change canonical files under
     `<uploadPrefix>/.sparcd-tagger-snapshots/<userId>/<ISO>/` using
     `writeImmutable`. These snapshots are for recovery only.
 - Write:
+  - `replaceIfUnchanged(bucket, "<uploadPrefix>/media.csv", serialized, { etag: baseMediaETag })`
   - `replaceIfUnchanged(bucket, "<uploadPrefix>/observations.csv", serialized, { etag: baseObservationsETag })`
   - `replaceIfUnchanged(bucket, "<uploadPrefix>/UploadMeta.json", serialized, { etag: baseUploadMetaETag })`
-  - `UploadMeta.json.imagesWithSpecies` is recomputed as the number of media
-    items with at least one positive-count observation row, matching the Java
-    app and `sparcd-web`.
-  - S3 has no atomic two-object transaction. The write order is
-    `observations.csv` first, `UploadMeta.json` second: if the second write
-    fails, existing tools can still read the new tags, but the upload tile
-    count may be stale until the tagger retries the metadata update. The
-    recovery view must detect and repair this state.
+  - `UploadMeta.json.imagesWithSpecies` follows Java's running delta:
+    `prior - detaggedCount + retaggedCount`. Detagged/retagged are computed
+    from the same before/after species-present state used for the edited
+    media rows, not from a full-bundle recompute.
+  - `UploadMeta.json.editComments` is appended on every successful sync with
+    the Java-style `Edited by <user> on <timestamp>` entry, using
+    `uuuu.MM.dd.HH.mm.ss` for the timestamp.
+  - S3 has no atomic three-object transaction. The write order is `media.csv`
+    first, `observations.csv` second, `UploadMeta.json` third: if the final
+    metadata write fails, existing tools can still read the new timestamp/tags,
+    but the upload tile count or edit comment may be stale until the tagger
+    retries. If the observations write fails after `media.csv`, readers may
+    show corrected capture time before species changes. The recovery view must
+    detect and repair either partial-sync state.
   - On a conditional conflict, do not retry blind. Reload, show conflict UI,
     and require an explicit merge.
   - Records `syncedAt`, new ETags, and hashes in Dexie.
@@ -528,6 +565,7 @@ load-bearing. Four layers, each redundant:
    `s3:ListBucket`, `s3:GetObject`, and `s3:PutObject` on
    `arn:aws:s3:::sparcd-test-*` (or the explicit test-bucket ARN list), with
    writes scoped to canonical compatibility files and audit snapshots:
+   `Collections/*/Uploads/*/media.csv`,
    `Collections/*/Uploads/*/observations.csv`,
    `Collections/*/Uploads/*/UploadMeta.json`, and
    `Collections/*/Uploads/*/.sparcd-tagger-snapshots/*` where the backend
@@ -545,9 +583,9 @@ load-bearing. Four layers, each redundant:
    discovers the settings/collection buckets by probing for marker objects,
    keeps dry-run on by default, and uses only the reviewed wrapper APIs.
 4. **Conditional canonical replacement** — every sync snapshots the old
-   canonical files immutably, then replaces only `observations.csv` and
-   `UploadMeta.json` with `IfMatch` against the ETags the user reviewed. A
-   stale ETag is a conflict, never an automatic overwrite.
+   canonical files immutably, then replaces only `media.csv`,
+   `observations.csv`, and `UploadMeta.json` with `IfMatch` against the ETags
+   the user reviewed. A stale ETag is a conflict, never an automatic overwrite.
 
 Plus a **dry-run toggle** on the sync action, on by default for the first
 session. Until the user explicitly turns dry-run off, sync logs what it
@@ -569,11 +607,14 @@ year/month/day/hour/minute/second with a live preview) and per-image
   top of the upload offset.
 
 **Non-destructive.** Originals (EXIF / canonical CSV timestamps) are never
-rewritten in place. Corrections are stored locally (`uploads.timeOffset`,
-`drafts.timeOverride`), applied on display, and emitted as the corrected
-timestamp in the canonical synced output. The corrected timestamp is emitted
-in `observations.csv` col 4 (`Observation.timestamp`), per the shipped
-`serializeObservations`.
+rewritten locally outside the reviewed sync path. Corrections are stored locally
+(`uploads.timeOffset`, `drafts.timeOverride`), applied on display, and emitted
+as the corrected timestamp in the canonical synced output. The corrected
+display/capture timestamp must be written to `media.csv` col 4
+(`Media.timestamp`), because Java and `sparcd-web` decorate image capture time
+from media rows. Edited observation rows also carry the corrected timestamp in
+`observations.csv` col 4 (`Observation.timestamp`), per the shipped
+`serializeObservations`, but writing observations alone is not sufficient.
 
 ## Sequence/burst grouping
 
@@ -620,7 +661,12 @@ button is one keystroke.
   false-trigger frame, shown as a text chip not a photo) — applied exactly
   like a species through the same list + bulk-tag path. Ghost is a core
   manual label, not a separate mechanism, and there is no automated ghost
-  detection in this tool.
+  detection in this tool. Compatibility default: because Java keys detag/retag
+  on whether `getSpeciesPresent().isEmpty()`, Ghost/Casper counts as
+  species-present when encoded as a species/label row. That means Ghost-tagged
+  images count toward `UploadMeta.json.imagesWithSpecies` and can be
+  "retagged" from Java's perspective. Confirm before P0 whether this semantic
+  should remain; changing it would intentionally diverge from Java behavior.
 
 ## Keyboard shortcuts (initial set)
 
@@ -645,7 +691,7 @@ button is one keystroke.
 | **P1** | Single-image tag editing; Dexie drafts; J/K nav; species autocomplete | None |
 | **P2** | Sequence/burst grouping; full keyboard set; cheatsheet modal | None |
 | **P3** | Batch tagging (multi-select); recovery view (local-only at this stage) | None |
-| **P4** | Compatibility sync: immutable pre-write snapshots plus conditional canonical replacement of `<uploadPrefix>/observations.csv` and `<uploadPrefix>/UploadMeta.json`; only after manual review of `replaceIfUnchanged`, mocked wrapper tests, fixture-backed merge tests, and endpoint-specific CORS/PUT preflight | First writes, dry-run by default |
+| **P4** | Compatibility sync: immutable pre-write snapshots plus conditional canonical replacement of `<uploadPrefix>/media.csv`, `<uploadPrefix>/observations.csv`, and `<uploadPrefix>/UploadMeta.json`; only after manual review of `replaceIfUnchanged`, mocked wrapper tests, fixture-backed merge tests, and endpoint-specific CORS/PUT preflight | First writes, dry-run by default |
 | **P5** | Snapshot/version recovery: load prior snapshots into local, restore through the same conditional canonical replacement flow | Same as P4 only on restore |
 | **P6** | Internal navigation sections beyond the tagging core: Browse, History (surfaces the P5 recovery capability), Settings | Reads only |
 
@@ -656,28 +702,34 @@ reviewed in isolation before any real bucket is at risk.
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key
-   stamps the bucket-side writer; we also want a logical `userId` for audit
-   snapshot paths and optional `UploadMeta.json.editComments` entries. Options:
-   prompt at session start, derive from access key, or pin to a config file.
-   Lean: prompt + persist.
+   stamps the bucket-side writer; we also need a logical `userId` for audit
+   snapshot paths and mandatory `UploadMeta.json.editComments` entries.
+   Options: prompt at session start, derive from access key, or pin to a
+   config file. Lean: prompt + persist.
 2. **First write-allowed bucket/credentials.** Not a build-time allowlist
    (that idea is gone — see Static BYO-S3 security contract); a concrete
    credential set whose IAM policy permits conditional `PUT` on canonical
-   `observations.csv` / `UploadMeta.json` and immutable snapshot writes on a
-   real bucket, so P4 has somewhere to test compatibility writes.
+   `media.csv` / `observations.csv` / `UploadMeta.json` and immutable snapshot
+   writes on a real bucket, so P4 has somewhere to test compatibility writes.
 3. ~~**Species hierarchy edits.**~~ Resolved: tagger never edits the
    hierarchy; missing species fall through to the `requestedSpecies`
    field (see Persistence — local), exported as a `[REQUESTED_SPECIES:…]`
    marker in the col-19 `comments` field for an upstream admin to act on.
    Cross-referenced in the Dexie schema.
 4. ~~**Canonical merge path.**~~ Resolved by compatibility requirement: the
-   tagger itself merges local edits into canonical `observations.csv` and
-   recomputes canonical `UploadMeta.json.imagesWithSpecies` during P4 sync.
-   Append-only files are audit snapshots only.
+   tagger itself merges local edits into canonical `media.csv` and
+   `observations.csv`, then updates canonical
+   `UploadMeta.json.imagesWithSpecies` with Java-compatible delta semantics
+   during P4 sync. Append-only files are audit snapshots only.
 5. **Conditional replacement backend support.** Verify the target MinIO/R2/S3
    endpoints enforce `IfMatch` on `PutObject` from browser SDK calls and expose
    enough `HEAD` metadata/ETag via CORS. If a backend cannot enforce this, P4
    cannot safely write canonical metadata from a static app.
+6. **Ghost/Casper counting semantics.** Compatibility default is that
+   Ghost/Casper counts as species-present because Java treats any non-empty
+   `speciesPresent` as tagged. Confirm before P0 that this is the intended
+   user-facing meaning; otherwise the plan must document the intentional Java
+   divergence and fixture expectations.
 
 ## Out of scope (explicit, for future tools)
 
