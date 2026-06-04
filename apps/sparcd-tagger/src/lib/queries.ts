@@ -8,12 +8,14 @@ import {
   listCollections,
   listUploads,
   listUploadImages,
+  loadCanonicalBundle,
   parseCollectionKey,
   type CollectionRef,
   type UploadRef,
   type UploadImage,
 } from './s3';
 import { fetchSpecies, type SpeciesResult } from './species';
+import { buildTagImages, type TagImage } from './workspace';
 
 export function useCollections(cfg: S3Config | null, connectionId: number) {
   return useQuery<CollectionRef[]>({
@@ -49,6 +51,26 @@ export function useUploadImages(
     queryFn: () => {
       const { bucket } = parseCollectionKey(collectionKey!);
       return listUploadImages(cfg!, bucket, uploadPrefix!);
+    },
+    enabled: !!cfg && !!collectionKey && !!uploadPrefix,
+    staleTime: 60 * 1000,
+    retry: 1,
+  });
+}
+
+/** The canonical base for the Tag workspace: `media.csv` joined with existing
+ *  `observations.csv` into per-image state. Read-only; P4 adds the write path. */
+export function useTagImages(
+  cfg: S3Config | null,
+  connectionId: number,
+  collectionKey: string | null,
+  uploadPrefix: string | null,
+) {
+  return useQuery<TagImage[]>({
+    queryKey: ['tagImages', connectionId, collectionKey, uploadPrefix],
+    queryFn: async () => {
+      const { bucket } = parseCollectionKey(collectionKey!);
+      return buildTagImages(await loadCanonicalBundle(cfg!, bucket, uploadPrefix!));
     },
     enabled: !!cfg && !!collectionKey && !!uploadPrefix,
     staleTime: 60 * 1000,

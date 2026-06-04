@@ -3,6 +3,7 @@ import { Connection } from '@sparcd/auth-ui';
 import { useStore } from './store';
 import { Chrome } from './components/Chrome';
 import { Browse } from './sections/Browse';
+import { Tag } from './sections/Tag';
 import { Settings } from './sections/Settings';
 import { Placeholder } from './sections/Placeholder';
 
@@ -35,9 +36,7 @@ export function App() {
       {section === 'browse' && <Browse />}
       {section === 'tag' &&
         (selectedUploadPrefix ? (
-          <Placeholder title="Tag workspace" phase="P1 – P3">
-            Single-image tagging, bursts, and batch tagging land here. The upload is loaded and ready.
-          </Placeholder>
+          <Tag />
         ) : (
           <Placeholder title="Tag workspace" phase="P1 – P3">
             Choose an upload in Browse to start tagging.

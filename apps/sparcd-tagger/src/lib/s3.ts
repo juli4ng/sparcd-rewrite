@@ -127,6 +127,39 @@ export function presignImage(cfg: S3Config, bucket: string, key: string): Promis
   return getClient(cfg).presignedGet(bucket, key, THUMB_TTL_SEC);
 }
 
+// --- Canonical Camtrap bundle (the Tag workspace base) ----------------------
+
+// The Tag workspace grounds on the same upload-level files the Java app and
+// sparcd-web read. `media.csv` is the authoritative image list (col 0 = full
+// object key, col 4 = capture time, col 1 = deployment); `observations.csv`
+// carries any existing species rows. P1 reads these only — no writes until P4.
+
+export type CanonicalBundle = {
+  mediaCsv: string;
+  observationsCsv: string;
+};
+
+async function getText(cfg: S3Config, bucket: string, key: string, what: string): Promise<string> {
+  try {
+    return new TextDecoder().decode(await getClient(cfg).getObject(bucket, key));
+  } catch (err) {
+    throw translateS3Error(err, what);
+  }
+}
+
+/** Load the canonical `media.csv` + `observations.csv` for one upload. */
+export async function loadCanonicalBundle(
+  cfg: S3Config,
+  bucket: string,
+  uploadPrefix: string,
+): Promise<CanonicalBundle> {
+  const [mediaCsv, observationsCsv] = await Promise.all([
+    getText(cfg, bucket, `${uploadPrefix}media.csv`, 'media.csv'),
+    getText(cfg, bucket, `${uploadPrefix}observations.csv`, 'observations.csv'),
+  ]);
+  return { mediaCsv, observationsCsv };
+}
+
 // --- Error translation (reused from the uploader's CORS mapping) -----------
 
 /** Map an S3/browser-fetch failure to an actionable message. A status-less

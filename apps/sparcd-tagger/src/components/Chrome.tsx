@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useStore, type Section } from '../store';
+import { useDraftStore, dirtyCount } from '../lib/drafts';
 import { StatePill } from './StatePill';
 
 // Reuses the uploader's section-tab chrome treatment so the tools read as
@@ -18,6 +19,10 @@ export function Chrome({ children }: { children: ReactNode }) {
   const toggleTheme = useStore((s) => s.toggleTheme);
   const syncState = useStore((s) => s.syncState);
   const hasUpload = useStore((s) => !!s.selectedUploadPrefix);
+  // Local-only in P1: surface unsaved edits so the pill is honest before the P4
+  // write path exists. `syncState` stays the source of truth once sync ships.
+  const hasDirty = useDraftStore((s) => dirtyCount(s.drafts) > 0);
+  const displayState = syncState === 'local-only' && hasDirty ? 'unsynced' : syncState;
 
   return (
     <div className="min-h-screen flex flex-col bg-paper">
@@ -52,7 +57,7 @@ export function Chrome({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
-          <StatePill state={syncState} />
+          <StatePill state={displayState} />
           <button
             onClick={toggleTheme}
             className="w-8 h-8 grid place-items-center border border-rule text-inkSoft hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"

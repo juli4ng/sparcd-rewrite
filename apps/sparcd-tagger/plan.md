@@ -863,6 +863,99 @@ persistent species panel + Fuse index over the already-loaded `useSpecies`
 data. Keep all S3 read access behind `src/lib/s3.ts`; do not import
 `@aws-sdk/client-s3` in app code.
 
+### P1 — implementation report (done)
+
+Status: **complete, local-only.** `pnpm check` (4 workspaces), `pnpm test`
+(camtrap 39 + uploader 36 + **tagger 9 new**), and `pnpm --filter sparcd-tagger
+build` all pass. Still nothing writes to S3 — `src/lib/s3.ts` constructs
+`SafeS3Client` with read scope only and no write method is called. New dep:
+`dexie@^4.0.8` (already in the lockfile from the uploader). `react-hotkeys-hook`
+and `react-zoom-pan-pinch` from the stack list were **not** added — see notes.
+
+**Dexie drafts (`src/lib/db.ts`).** v1 schema exactly as the plan specifies:
+`drafts` (keyed `${bucket}::${uploadPrefix}::${mediaPath}`, indexed
+`[bucket+uploadPrefix]`), `uploads` (`${bucket}::${uploadPrefix}`, holds
+`timeOffset` + the P4 grounding ETags/hashes as optional fields), and
+`sessions`. The `base*ETag/Hash` / `auditSnapshotKey` / `timeOverride` /
+`timeOffset` fields all live in the v1 shape now so P4 adds **no schema bump**;
+P1 leaves them undefined and writes only the edit fields. `dirty` is a boolean,
+so it is **not** an IndexedDB index — `listDirtyDrafts` filters in JS (the
+recovery scan P3 will use). Helpers: `loadDraftsForUpload`, `listDirtyDrafts`,
+`discardUploadDrafts`.
+
+**Draft store (`src/lib/drafts.ts`).** A Zustand store is the hot path; Dexie is
+a debounced (200 ms, per-record) write-through mirror, off the keystroke path
+per the perf contract. Mutations replace the top-level `drafts` object but
+preserve unchanged record references, so a per-row `s.drafts[path]` selector
+re-renders only the edited row — tagging one image never re-renders the strip.
+`applyTag` / `detag` / `toggleQuestionable` / `loadUpload` / `discardUpload`.
+**Single label per image in v1** (the plan's draft schema is single
+`label`+`count`); multi-species rows are deferred — noted below. Ghost is the
+built-in `{ label: 'Casper', commonName: 'Ghost' }` constant, encoded as a
+species row so it counts as species-present (the P0 compatibility decision).
+
+**Canonical base (`src/lib/s3.ts` + `src/lib/workspace.ts`).** Added
+`loadCanonicalBundle` (reads `<prefix>media.csv` + `observations.csv`) and
+`buildTagImages`, which joins them into per-image base state: `media.csv` is the
+authoritative image list/order and the source of `deploymentId` + capture time
+(col 4), and existing `observations.csv` rows seed each image's already-tagged
+label/common-name/count (so prior Java/sparcd-web/tagger work shows on reopen).
+Surfaced via `useTagImages` in `queries.ts`. The Tag workspace grounds on
+`media.csv` directly rather than `listUploadImages`, because the readers do too.
+
+**Species panel + keybindings (`src/components/SpeciesPanel.tsx`,
+`src/lib/keys.ts`).** A persistent, scrollable, browsable list (not just a
+type-to-filter popover): each row shows the `speciesIconURL` thumbnail, common +
+scientific name, a kbd badge, and an assign/rebind/clear affordance. Fuse index
+over `commonName` + `scientificName` (no genus in the on-disk shape). A built-in
+Ghost row (text chip) and a "Request '…'" row that emits a free-text
+`[REQUESTED_SPECIES:…]`. Per-species keys are **user-assignable and persistent**
+(localStorage via Zustand `persist`), seeded from the desktop app's data-compatible
+`species.json` `keyBinding` (Java KeyCode → `KeyboardEvent.key` via
+`normalizeJavaKeyCode`), with **local overrides winning** and a key uniquely
+owned by one species. Recent-this-session affects list **ordering only**, never
+key assignment — exactly as the plan requires.
+
+**Tag workspace (`src/sections/Tag.tsx`).** Three-pane grid: image strip (tiny
+thumb + tag status + unsaved dot per row) · focus view (full presigned image +
+filename/timestamp/deployment + applied-tag chip + Detag) · species panel.
+Keyboard: a **single global `keydown` handler attached once**, reading the
+latest state through a ref so it never re-binds per render (perf contract). Wired
+`J`/`K` (+ arrows) next/prev, `Space` focus filter, `Enter` apply top filter
+match + blur, `X` questionable, `G` Ghost, and **assigned species keys**; all
+species/label keys are suppressed while the filter box is focused, and an
+"assign key" capture mode swallows the next key. The Chrome sync pill now shows
+`unsynced edits` when dirty drafts exist (still local-only; P4 owns real sync).
+
+**Tests (`apps/sparcd-tagger/test/`, new vitest harness + `test` script wired
+into turbo).** `workspace.test.ts` proves the media↔observations join + base
+seeding (using raw col-4 media rows, since the uploader's `serializeMedia`
+intentionally blanks col 4). `keys.test.ts` proves Java KeyCode normalization
+and override-wins resolution. Data-shape contracts remain in `@sparcd/camtrap`.
+
+**Deliberate deviations / deferrals (for the P2+ agent):**
+- **`react-hotkeys-hook` not used.** The plan's perf section mandates a "global
+  handler with no per-render re-binding"; a single ref-backed `window` listener
+  satisfies that better than per-component hooks. The dep was dropped, not
+  forgotten.
+- **No virtualization yet.** The strip and species list render plainly. Fine for
+  the small Educational Test collection; `@tanstack/react-virtual` for the
+  thumbnail grid is a P2 perf task (5,000-image @60fps target).
+- **Single label per image.** Matches the v1 Dexie schema. Multi-species rows
+  (a fixture case for P4 merge) need either a schema change to an
+  `observations[]` array or a separate model; `MediaEdit.observations` in
+  `@sparcd/camtrap` already accepts an array, so the merge side is ready.
+- **Time correction UI not built.** `drafts.timeOverride` + `uploads.timeOffset`
+  fields exist and persist, but the upload-offset/per-image-override editors
+  (the "Time correction" section) are unbuilt — a natural P2 add alongside
+  bursts, or its own pass.
+- **`Cmd/Ctrl+S`, `?` cheatsheet, `Shift+J/K` burst nav, `Cmd/Ctrl+A`** are P2
+  (full keyboard set + cheatsheet modal); only the P1 subset is wired.
+- Live CORS/`species.json` presence is **still unverified** (carried from P0 —
+  no credentials in this workspace). Drop an `apps/sparcd-tagger/.env` and run
+  `pnpm --filter sparcd-tagger dev` to confirm the read path against the live
+  endpoint, then eyeball the Tag workspace end-to-end.
+
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key
