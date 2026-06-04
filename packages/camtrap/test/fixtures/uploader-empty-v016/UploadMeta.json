@@ -1,0 +1,22 @@
+{
+  "uploadUser": "priortagger",
+  "uploadDate": {
+    "date": {
+      "year": 2024,
+      "month": 1,
+      "day": 15
+    },
+    "time": {
+      "hour": 10,
+      "minute": 0,
+      "second": 0,
+      "nano": 0
+    }
+  },
+  "imagesWithSpecies": 0,
+  "imageCount": 5,
+  "editComments": [],
+  "bucket": "sparcd-8dbd9c43-5c3d-411d-8778-617d4693c69b",
+  "uploadPath": "Collections/8dbd9c43-5c3d-411d-8778-617d4693c69b/Uploads/2024.01.15.10.00.00",
+  "description": "Educational Test — burst sample"
+}

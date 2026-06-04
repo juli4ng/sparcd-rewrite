@@ -765,6 +765,104 @@ P0–P3 are fully usable as a local-only tagger. The S3 write path doesn't
 exist in the build until P4, which means the safety wrapper can be
 reviewed in isolation before any real bucket is at risk.
 
+### P0 — implementation report (done)
+
+Status: **complete, local-only/read-only.** `pnpm test` (39 tests) and
+`pnpm check` (all 4 workspaces) pass; `pnpm --filter sparcd-tagger build`
+produces a static bundle. Nothing in this build can write to S3 — the wrapper's
+write methods are simply not called, and the tagger constructs `SafeS3Client`
+with a read-only scope.
+
+**Data contract — `@sparcd/camtrap` (the priority, done first).** Extended
+`packages/camtrap/src/index.ts` with everything the merge tests need; the v016
+writers were left untouched as the byte-shape source of truth. Added:
+- `parseCsvRows` / `serializeCsvRows` — a tokenizer + writer-policy serializer
+  that round-trips writer output byte-for-byte and tolerates the looser live
+  shapes (bare fields, embedded commas/newlines, stray CR).
+- Typed readers `parseDeployments` / `parseMedia` / `parseObservations` and the
+  fixed column-index maps (`MEDIA_COL`, `OBS_COL`, `DEPLOY_COL`).
+- Tag-marker grammar: `parseTagMarkers` / `serializeTagMarkers` /
+  `buildObservationComments` / `commonNameFromComments` /
+  `requestedSpeciesFromComments`. Unknown prefixes are preserved.
+- Merge: `mergeMedia` (rewrites only edited media col 4),
+  `mergeObservations` (replaces all rows for an edited media id, preserves
+  unrelated rows **and unmodelled columns** verbatim, drops zero-count rows like
+  sparcd-web), `computeSpeciesDelta` + `applyUploadMetaEdit` (Java
+  `prior − detagged + retagged`, mandatory `Edited by … on …` comment,
+  key order preserved). **Merge operates on raw rows, not the typed view**, so a
+  sync never silently drops a column the tagger doesn't model.
+- Time correction: `shiftTimestamp`, `correctedTimestamp` (per-image override
+  beats upload offset), `TimeOffset`/`ZERO_OFFSET`, `javaEditStamp`.
+- Validators: `validateCoordinates` (range + transposition heuristic),
+  `validateColumnCount`.
+
+**Shared fixtures + Vitest harness.** `packages/camtrap/test/fixtures/` holds
+`java-v016`, `sparcd-web-v016`, `uploader-empty-v016`, and `tagger-edited-v016`,
+materialized by a committed, self-documenting `_generate.mjs` whose **expected
+tagger output is hand-built, independent of the merge code it validates** (so
+the golden comparison is a real check, not a tautology). Fixtures include a
+populated unrelated survivor row (IMG004, rich behaviour/taxon_id/etc.), a
+multi-species image, a requested-species marker, a Ghost/Casper detag, a
+per-image time correction, and a drifted `UploadMeta.drifted.json`. Tests
+(`csv`, `readers`, `merge`, `contracts`) cover round-trip, uploader-empty base,
+tagger→golden byte equality, retro-compat field positions, zero-count filter,
+no-data-loss, UploadMeta drift, edit-comment format, and time math. Root `test`
+script + per-package `test` wired through turbo; default suite runs offline.
+
+**App scaffold (`apps/sparcd-tagger/`).** Vite + React 18 + TS, reusing the four
+shared packages and the uploader's proven config (Tailwind/Field Notebook
+tokens, `base: '/sparcd-exploration/tagger/'`). Shared `@sparcd/auth-ui`
+Connection gate (three fields). `src/lib/s3.ts` reuses the uploader's runtime
+collection model verbatim (`sparcd-<uuid>` candidates → `collection.json`
+marker, `bucket::uuid` keying, `connectionId`-scoped client cache cleared on
+connect/disconnect) and adds `listUploads`, `listUploadImages` (sparcd-web
+`get_s3_images` parity: recurse, return only `.jpg`/`.mp4`), and
+`presignImage`. Browse section drills collection → upload → presigned image
+grid (the "image viewer reads from a discovered collection" gate). Chrome with
+Browse/Tag/History/Settings tabs + a `StatePill` wired for all sync states (live
+value `local-only`). Settings holds identity + dry-run default + burst
+threshold. CORS error translation reuses the uploader's 404/403/status-less
+mapping.
+
+**`Settings/species.json` — path + shape confirmed.** Verified against the
+upstream writer (`model/species/Species.java` + `resources/species.json`, via
+`gh api`): a **flat** JSON array of
+`{ name, scientificName, speciesIconURL, keyBinding }` — `name` is the common
+name, `keyBinding` is a Java KeyCode string (e.g. `"D"`, `"DIGIT1"`) or null.
+**No genus/species tree and no `id` field**, so `@sparcd/types.Species`
+(genus/species/commonName) does not match the on-disk file; `src/lib/species.ts`
+defines the real shape and keys on `scientificName`, collapsing duplicate
+scientific names (id-is-not-unique caution carried over from `locations.json`).
+The Fuse index over name + scientificName lands in P1 when the species panel is
+built; the loader/parser exist now and surface a count in Browse.
+
+**Open question #4 (Ghost/Casper) — resolved as the compatibility default and
+encoded in tests.** Ghost is encoded as a species/label row (`Casper`, count ≥1)
+and therefore counts as species-present, so it participates in detag/retag
+exactly like Java. The `tagger-edited-v016` golden exercises both a Ghost
+**detag** (IMG003, −1) and a Ghost **add** (IMG005, +1).
+
+**Not closeable offline — needs the next agent / live credentials:**
+- **Browser CORS preflight + `species.json` presence.** The read code paths and
+  error translation are built, but no live `ListBucket`/`GetObject`/`HeadObject`
+  preflight has been run against the target endpoint (no credentials in this
+  workspace). Drop an `apps/sparcd-tagger/.env` with
+  `VITE_SPARCD_S3_ENDPOINT` + a read-only key and run `pnpm --filter
+  sparcd-tagger dev` to confirm the origin is allowed and that
+  `Settings/species.json` exists in the live settings bucket. The `.jpg`/`.mp4`
+  `<img>` render-without-canvas assumption is encoded in `Thumb.tsx` and should
+  be eyeballed live.
+- Open questions #1–#3 (snapshot/edit-comment identity persistence, first
+  write-allowed credentials, `IfMatch`/`IfNoneMatch` backend enforcement) remain
+  **P4 gates** and are untouched here by design — P0 writes nothing.
+
+**For the P1 agent:** the merge/draft data model is ready
+(`MediaEdit`/`ObservationInput` in `@sparcd/camtrap`). P1 adds the Dexie `drafts`
+schema, the Tag workspace (currently a `Placeholder`), J/K nav, and the
+persistent species panel + Fuse index over the already-loaded `useSpecies`
+data. Keep all S3 read access behind `src/lib/s3.ts`; do not import
+`@aws-sdk/client-s3` in app code.
+
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key

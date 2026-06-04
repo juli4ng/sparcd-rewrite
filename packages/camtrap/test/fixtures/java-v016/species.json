@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Mule Deer",
+    "scientificName": "Odocoileus hemionus",
+    "speciesIconURL": "https://example.org/muledeer.jpg",
+    "keyBinding": "D"
+  },
+  {
+    "name": "Coyote",
+    "scientificName": "Canis latrans",
+    "speciesIconURL": "https://example.org/coyote.jpg",
+    "keyBinding": null
+  },
+  {
+    "name": "Mountain Lion",
+    "scientificName": "Puma concolor",
+    "speciesIconURL": "https://example.org/puma.jpg",
+    "keyBinding": "P"
+  },
+  {
+    "name": "Ghost",
+    "scientificName": "Casper",
+    "speciesIconURL": "",
+    "keyBinding": "G"
+  }
+]

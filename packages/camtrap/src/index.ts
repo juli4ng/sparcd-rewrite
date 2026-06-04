@@ -252,3 +252,502 @@ export type UploadCompleteJson = {
 export function serializeUploadComplete(c: UploadCompleteJson): string {
   return JSON.stringify(c, null, 2);
 }
+
+// ===========================================================================
+// v016 readers + tagger merge helpers (added for sparcd-tagger, P0).
+//
+// The writers above are the byte-shape contract; everything below is the
+// inverse plus the surgical merge the tagger needs. Two hard rules drive the
+// design:
+//
+//   1. Round-trip stability. `serializeCsvRows(parseCsvRows(s))` reproduces a
+//      writer-shaped string byte-for-byte, so a merge that only touches edited
+//      rows leaves every other byte untouched.
+//   2. Preserve unrelated data. Merge operates on *raw* string rows, never on
+//      the typed view, so columns this package doesn't model (taxon_id,
+//      behaviour, count_new, …) and rows for images the tagger never touched
+//      survive a sync exactly as Java / sparcd-web wrote them.
+// ===========================================================================
+
+// --- Low-level CSV ---------------------------------------------------------
+
+/**
+ * Tokenize CSV text into raw rows of fields. Handles the writer's QUOTE_ALL
+ * output (every field quoted, `""` escaping, LF rows) *and* the looser shapes
+ * seen in live Java / sparcd-web files (bare fields, embedded commas/newlines
+ * inside quotes, stray CR). Truly empty lines are dropped; a quoted empty
+ * field (`""`) is preserved. Empty input → `[]`.
+ */
+export function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  let sawAny = false; // any char (incl. a quote) seen in the current row
+
+  const endField = () => {
+    row.push(field);
+    field = '';
+  };
+  const endRow = () => {
+    endField();
+    rows.push(row);
+    row = [];
+    sawAny = false;
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else inQuotes = false;
+      } else field += ch;
+      sawAny = true;
+    } else if (ch === '"') {
+      inQuotes = true;
+      sawAny = true;
+    } else if (ch === ',') {
+      endField();
+      sawAny = true;
+    } else if (ch === '\n') {
+      if (sawAny) endRow();
+      else {
+        field = '';
+        row = [];
+      }
+    } else if (ch === '\r') {
+      // tolerate CRLF — drop the CR
+    } else {
+      field += ch;
+      sawAny = true;
+    }
+  }
+  if (sawAny || field !== '' || row.length > 0) endRow();
+  return rows;
+}
+
+/** Serialize raw rows with the writer's QUOTE_ALL + LF policy (inverse of `parseCsvRows`). */
+export function serializeCsvRows(rows: string[][]): string {
+  return rows.map(csvRow).join('');
+}
+
+// Fixed-position column indices — the v016 contract. Readers/merge reference
+// these names instead of magic numbers; the writer above is their source.
+export const MEDIA_COL = {
+  mediaId: 0,
+  deploymentId: 1,
+  sequenceId: 2,
+  captureMethod: 3,
+  timestamp: 4,
+  filePath: 5,
+  fileName: 6,
+  mediaType: 7,
+  exif: 8,
+  favorite: 9,
+  comments: 10,
+} as const;
+
+export const OBS_COL = {
+  observationId: 0,
+  deploymentId: 1,
+  sequenceId: 2,
+  mediaId: 3,
+  timestamp: 4,
+  observationType: 5,
+  cameraSetup: 6,
+  taxonId: 7,
+  scientificName: 8,
+  count: 9,
+  countNew: 10,
+  lifeStage: 11,
+  sex: 12,
+  behaviour: 13,
+  individualId: 14,
+  classificationMethod: 15,
+  classifiedBy: 16,
+  classificationTimestamp: 17,
+  classificationConfidence: 18,
+  comments: 19,
+} as const;
+
+export const DEPLOY_COL = {
+  deploymentId: 0,
+  locationId: 1,
+  locationName: 2,
+  longitude: 3,
+  latitude: 4,
+  cameraHeight: 12,
+} as const;
+
+export const OBS_COLUMN_COUNT = 20;
+export const MEDIA_COLUMN_COUNT = 11;
+export const DEPLOY_COLUMN_COUNT = 23;
+
+// --- Typed readers ---------------------------------------------------------
+
+/** Parse `deployments.csv` into typed rows (note: longitude precedes latitude). */
+export function parseDeployments(csv: string): Deployment[] {
+  return parseCsvRows(csv).map((r) => ({
+    deploymentId: r[DEPLOY_COL.deploymentId] ?? '',
+    locationId: r[DEPLOY_COL.locationId] ?? '',
+    locationName: r[DEPLOY_COL.locationName] ?? '',
+    longitude: Number(r[DEPLOY_COL.longitude]),
+    latitude: Number(r[DEPLOY_COL.latitude]),
+    elevation: Number(r[DEPLOY_COL.cameraHeight]),
+  }));
+}
+
+/** Parse `media.csv` into typed rows. `mediaPath` is the full object key (col 0). */
+export function parseMedia(csv: string): Media[] {
+  return parseCsvRows(csv).map((r) => ({
+    mediaId: r[MEDIA_COL.mediaId] ?? '',
+    deploymentId: r[MEDIA_COL.deploymentId] ?? '',
+    mediaPath: r[MEDIA_COL.mediaId] ?? '',
+    fileName: r[MEDIA_COL.fileName] ?? '',
+    timestamp: r[MEDIA_COL.timestamp] ?? '',
+    mimeType: r[MEDIA_COL.mediaType] ?? '',
+  }));
+}
+
+/** Parse `observations.csv` into typed rows. `tags` is the raw col-19 comments. */
+export function parseObservations(csv: string): Observation[] {
+  return parseCsvRows(csv).map((r) => ({
+    observationId: r[OBS_COL.observationId] ?? '',
+    mediaId: r[OBS_COL.mediaId] ?? '',
+    deploymentId: r[OBS_COL.deploymentId] ?? '',
+    timestamp: r[OBS_COL.timestamp] ?? '',
+    scientificName: r[OBS_COL.scientificName] ?? '',
+    count: Number(r[OBS_COL.count] ?? '0'),
+    tags: r[OBS_COL.comments] ?? '',
+  }));
+}
+
+// --- Tag marker grammar ----------------------------------------------------
+
+export type TagMarker = { prefix: string; value: string };
+
+/** Reserved prefixes for v0. Unknown prefixes are tolerated and preserved. */
+export const COMMONNAME_PREFIX = 'COMMONNAME';
+export const REQUESTED_SPECIES_PREFIX = 'REQUESTED_SPECIES';
+
+// `[PREFIX:value]` markers concatenated in the col-19 comments field. Prefixes
+// are upper snake; values run to the next `]`.
+const MARKER_RE = /\[([A-Z0-9_]+):([^\]]*)\]/g;
+
+export function parseTagMarkers(comments: string): TagMarker[] {
+  const out: TagMarker[] = [];
+  for (const m of comments.matchAll(MARKER_RE)) out.push({ prefix: m[1], value: m[2] });
+  return out;
+}
+
+export function serializeTagMarkers(markers: TagMarker[]): string {
+  return markers.map((m) => `[${m.prefix}:${m.value}]`).join('');
+}
+
+/** First `[COMMONNAME:…]` value, or null. */
+export function commonNameFromComments(comments: string): string | null {
+  const m = parseTagMarkers(comments).find((t) => t.prefix === COMMONNAME_PREFIX);
+  return m ? m.value : null;
+}
+
+/** First `[REQUESTED_SPECIES:…]` value, or null. */
+export function requestedSpeciesFromComments(comments: string): string | null {
+  const m = parseTagMarkers(comments).find((t) => t.prefix === REQUESTED_SPECIES_PREFIX);
+  return m ? m.value : null;
+}
+
+/**
+ * Build the col-19 comments string for one observation. `commonName` and
+ * `requestedSpecies` land as reserved markers; `extra` carries through any
+ * markers a future tool added so this writer never strips them.
+ */
+export function buildObservationComments(input: {
+  commonName?: string;
+  requestedSpecies?: string;
+  extra?: TagMarker[];
+}): string {
+  const markers: TagMarker[] = [];
+  if (input.commonName) markers.push({ prefix: COMMONNAME_PREFIX, value: input.commonName });
+  if (input.requestedSpecies)
+    markers.push({ prefix: REQUESTED_SPECIES_PREFIX, value: input.requestedSpecies });
+  if (input.extra) markers.push(...input.extra);
+  return serializeTagMarkers(markers);
+}
+
+// --- Tagger merge ----------------------------------------------------------
+
+/** One species/label applied to an image (a SPARC'd observation is species + count only). */
+export type ObservationInput = {
+  scientificName: string; // col 8 (e.g. "Canis latrans", "Casper" for Ghost)
+  count: number; // col 9
+  commonName?: string; // → [COMMONNAME:…] in col 19
+  requestedSpecies?: string; // → [REQUESTED_SPECIES:…] in col 19
+  extraMarkers?: TagMarker[]; // preserved through-markers
+};
+
+/**
+ * The full edited state for one image. `observations` is the *complete*
+ * replacement set for this media id — `[]` means detag. `timestamp` stamps new
+ * observation rows (col 4); `mediaTimestamp`, when set, also rewrites the
+ * media row's col 4 (a synced time correction).
+ */
+export type MediaEdit = {
+  mediaId: string; // full object key, = media.csv col 0 / observations col 3
+  deploymentId: string;
+  timestamp: string; // ISO stamped on new observation rows
+  mediaTimestamp?: string; // if set, overwrite media.csv col 4 for this image
+  observations: ObservationInput[];
+};
+
+/** Default observation-id scheme for tagger-created rows (deterministic; readers key on media id, not this). */
+export const defaultObservationId = (mediaId: string, index: number): string =>
+  `${mediaId}:${index}`;
+
+// Drop zero/negative-count observations exactly as sparcd-web does before a row
+// is considered "species present".
+const positiveCount = (o: ObservationInput): boolean => o.count > 0;
+
+function buildObservationRow(
+  edit: MediaEdit,
+  o: ObservationInput,
+  observationId: string,
+): string[] {
+  const row = new Array<string>(OBS_COLUMN_COUNT).fill('');
+  row[OBS_COL.observationId] = observationId;
+  row[OBS_COL.deploymentId] = edit.deploymentId;
+  row[OBS_COL.mediaId] = edit.mediaId;
+  row[OBS_COL.timestamp] = edit.timestamp;
+  row[OBS_COL.cameraSetup] = 'false';
+  row[OBS_COL.scientificName] = o.scientificName;
+  row[OBS_COL.count] = String(o.count);
+  row[OBS_COL.countNew] = '0';
+  row[OBS_COL.comments] = buildObservationComments({
+    commonName: o.commonName,
+    requestedSpecies: o.requestedSpecies,
+    extra: o.extraMarkers,
+  });
+  return row;
+}
+
+/**
+ * Merge time corrections into `media.csv`. Only rows whose media id appears in
+ * an edit with a `mediaTimestamp` are touched (col 4); every other byte —
+ * including media rows for un-edited images — is preserved.
+ */
+export function mergeMedia(canonicalMediaCsv: string, edits: MediaEdit[]): string {
+  const newTs = new Map<string, string>();
+  for (const e of edits) if (e.mediaTimestamp !== undefined) newTs.set(e.mediaId, e.mediaTimestamp);
+  if (newTs.size === 0) return canonicalMediaCsv;
+  const rows = parseCsvRows(canonicalMediaCsv);
+  for (const row of rows) {
+    const ts = newTs.get(row[MEDIA_COL.mediaId]);
+    if (ts !== undefined) row[MEDIA_COL.timestamp] = ts;
+  }
+  return serializeCsvRows(rows);
+}
+
+export type MergeObservationsOptions = {
+  observationId?: (mediaId: string, index: number) => string;
+};
+
+/**
+ * Merge tagger edits into `observations.csv`. For each edited media id, all
+ * existing rows are removed and replaced by the edit's positive-count
+ * observations; unrelated media keep their rows untouched and in order. New
+ * rows take the slot of that media's first existing row, or append (in edit
+ * order) when the image had none. Zero-count rows are dropped (sparcd-web
+ * parity), so an all-zero edit detags the image.
+ */
+export function mergeObservations(
+  canonicalObsCsv: string,
+  edits: MediaEdit[],
+  opts: MergeObservationsOptions = {},
+): string {
+  const genId = opts.observationId ?? defaultObservationId;
+  const editByMedia = new Map(edits.map((e) => [e.mediaId, e]));
+  const built = new Map<string, string[][]>();
+  for (const e of edits) {
+    built.set(
+      e.mediaId,
+      e.observations
+        .filter(positiveCount)
+        .map((o, i) => buildObservationRow(e, o, genId(e.mediaId, i))),
+    );
+  }
+
+  const rows = parseCsvRows(canonicalObsCsv);
+  const out: string[][] = [];
+  const placed = new Set<string>();
+  for (const row of rows) {
+    const mediaId = row[OBS_COL.mediaId];
+    if (!editByMedia.has(mediaId)) {
+      out.push(row);
+      continue;
+    }
+    // First time we hit this edited media, splice in its replacement rows.
+    if (!placed.has(mediaId)) {
+      out.push(...(built.get(mediaId) ?? []));
+      placed.add(mediaId);
+    }
+    // Subsequent canonical rows for this media are dropped (replaced).
+  }
+  // Edited media that had no canonical rows: append in edit order.
+  for (const e of edits) {
+    if (!placed.has(e.mediaId)) {
+      out.push(...(built.get(e.mediaId) ?? []));
+      placed.add(e.mediaId);
+    }
+  }
+  return serializeCsvRows(out);
+}
+
+// --- UploadMeta.json delta -------------------------------------------------
+
+/** True when an image counts as "species present" (≥1 positive-count row). */
+function hasSpeciesPresent(observations: { count: number }[]): boolean {
+  return observations.some((o) => o.count > 0);
+}
+
+export type SpeciesDelta = { detagged: number; retagged: number };
+
+/**
+ * Java's `imagesWithSpecies` delta, computed from the edited media only (not a
+ * full recompute): detagged = was species-present, now empty; retagged = was
+ * empty, now species-present. Ghost/Casper counts as species-present.
+ */
+export function computeSpeciesDelta(canonicalObsCsv: string, edits: MediaEdit[]): SpeciesDelta {
+  const before = parseObservations(canonicalObsCsv);
+  const byMedia = new Map<string, Observation[]>();
+  for (const o of before) {
+    const arr = byMedia.get(o.mediaId) ?? [];
+    arr.push(o);
+    byMedia.set(o.mediaId, arr);
+  }
+  let detagged = 0;
+  let retagged = 0;
+  for (const e of edits) {
+    const wasPresent = hasSpeciesPresent(byMedia.get(e.mediaId) ?? []);
+    const nowPresent = hasSpeciesPresent(e.observations);
+    if (wasPresent && !nowPresent) detagged++;
+    else if (!wasPresent && nowPresent) retagged++;
+  }
+  return { detagged, retagged };
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** Java's `uuuu.MM.dd.HH.mm.ss` edit-comment timestamp (local time). */
+export function javaEditStamp(d: Date): string {
+  return (
+    `${d.getFullYear()}.${pad2(d.getMonth() + 1)}.${pad2(d.getDate())}.` +
+    `${pad2(d.getHours())}.${pad2(d.getMinutes())}.${pad2(d.getSeconds())}`
+  );
+}
+
+/**
+ * Apply a tagger sync to `UploadMeta.json`: shift `imagesWithSpecies` by the
+ * Java delta (`prior - detagged + retagged`) and append the mandatory
+ * `Edited by <user> on <stamp>` comment. Existing keys keep their position, so
+ * the serialized bytes stay aligned with the live shape.
+ */
+export function applyUploadMetaEdit(
+  meta: UploadMetaJson,
+  input: { delta: SpeciesDelta; user: string; editStamp: string },
+): UploadMetaJson {
+  return {
+    ...meta,
+    imagesWithSpecies: meta.imagesWithSpecies - input.delta.detagged + input.delta.retagged,
+    editComments: [...meta.editComments, `Edited by ${input.user} on ${input.editStamp}`],
+  };
+}
+
+/** Parse `UploadMeta.json` text (shape is the live file; key order ignored on read). */
+export function parseUploadMeta(text: string): UploadMetaJson {
+  return JSON.parse(text) as UploadMetaJson;
+}
+
+// --- Time correction -------------------------------------------------------
+
+/** Signed offset applied to every image in an upload (mirrors Java TimeShift). */
+export type TimeOffset = {
+  years: number;
+  months: number;
+  days: number;
+  hours: number;
+  minutes: number;
+  seconds: number;
+};
+
+export const ZERO_OFFSET: TimeOffset = {
+  years: 0,
+  months: 0,
+  days: 0,
+  hours: 0,
+  minutes: 0,
+  seconds: 0,
+};
+
+// Parse the naive `YYYY-MM-DDTHH:mm:ss` form into UTC components so month/year
+// arithmetic and DST never shift the wall-clock value.
+const TS_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/;
+
+/**
+ * Shift a naive ISO timestamp by a signed offset, returning the same
+ * `YYYY-MM-DDTHH:mm:ss` shape. Non-matching input is returned unchanged.
+ */
+export function shiftTimestamp(iso: string, off: TimeOffset): string {
+  const m = TS_RE.exec(iso);
+  if (!m) return iso;
+  const d = new Date(
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])),
+  );
+  d.setUTCFullYear(d.getUTCFullYear() + off.years);
+  d.setUTCMonth(d.getUTCMonth() + off.months);
+  d.setUTCDate(d.getUTCDate() + off.days);
+  d.setUTCHours(d.getUTCHours() + off.hours);
+  d.setUTCMinutes(d.getUTCMinutes() + off.minutes);
+  d.setUTCSeconds(d.getUTCSeconds() + off.seconds);
+  return (
+    `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}T` +
+    `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`
+  );
+}
+
+/** Resolve the corrected timestamp for one image: per-image override wins over the upload offset. */
+export function correctedTimestamp(
+  original: string,
+  offset: TimeOffset | null,
+  override: string | null,
+): string {
+  if (override) return override;
+  if (offset) return shiftTimestamp(original, offset);
+  return original;
+}
+
+// --- Validators ------------------------------------------------------------
+
+/**
+ * Coordinate sanity check. Latitude/longitude are easy to transpose, so a
+ * latitude outside [-90, 90] that *would* be valid as a longitude is flagged
+ * specifically. Returns a human reason, or null when both are in range.
+ */
+export function validateCoordinates(latitude: number, longitude: number): string | null {
+  const latOk = latitude >= -90 && latitude <= 90;
+  const lngOk = longitude >= -180 && longitude <= 180;
+  if (latOk && lngOk) return null;
+  if (!latOk && Math.abs(latitude) <= 180 && Math.abs(longitude) <= 90) {
+    return 'latitude/longitude look transposed';
+  }
+  if (!latOk) return `latitude ${latitude} out of [-90, 90]`;
+  return `longitude ${longitude} out of [-180, 180]`;
+}
+
+/** Assert a parsed CSV has the expected fixed column count on every row. */
+export function validateColumnCount(rows: string[][], expected: number): string | null {
+  const bad = rows.findIndex((r) => r.length !== expected);
+  if (bad === -1) return null;
+  return `row ${bad} has ${rows[bad].length} columns, expected ${expected}`;
+}
