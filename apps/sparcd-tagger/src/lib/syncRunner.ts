@@ -58,9 +58,9 @@ export async function performSync(args: SyncArgs): Promise<SyncResult> {
       uploadPrefix,
       user,
       base: {
-        media: { etag: base?.mediaETag ?? '' },
-        observations: { etag: base?.observationsETag ?? '' },
-        uploadMeta: { etag: base?.uploadMetaETag ?? '' },
+        media: { etag: base?.mediaETag ?? '', hash: base?.mediaHash ?? '' },
+        observations: { etag: base?.observationsETag ?? '', hash: base?.observationsHash ?? '' },
+        uploadMeta: { etag: base?.uploadMetaETag ?? '', hash: base?.uploadMetaHash ?? '' },
       },
       plan,
       dryRun,

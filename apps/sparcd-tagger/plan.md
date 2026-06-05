@@ -1347,6 +1347,80 @@ browser is the **P6 History** section's job (the phase table already assigns
   dev` check P0–P4 flagged; additionally exercise a real sync (to create a
   snapshot) then a real restore of it against a write-allowed test bucket.
 
+### P6 — implementation report (done)
+
+Status: **complete — the internal navigation sections are finished; reads only.**
+`pnpm --filter sparcd-tagger check` (tsc), `pnpm test` (camtrap 39 + uploader 36
++ s3-safe 5 + tagger 46, unchanged), and `pnpm --filter sparcd-tagger build` all
+pass. P6 adds no write path — the only new S3 calls are `listCommonPrefixes` +
+`getObject(manifest.json)` reads, on the read-scoped client. With P6 the
+phased delivery table is fully delivered.
+
+**Cross-upload snapshot browser — the P5 handoff item (`src/sections/Recovery.tsx`,
+the History tab).** The History section was a single local-dirty-draft list; it
+is now two clearly-labelled recovery surfaces:
+- **Unsynced local edits** — the existing dirty-draft browser (unchanged
+  behaviour: `listDirtyDrafts` grouped by upload, Open → routes to the Tag
+  workspace, Discard runs `discardUpload`), refactored into a `LocalEdits`
+  subcomponent.
+- **Synced snapshots** — a new `Snapshots` subcomponent that lists every upload
+  in a collection that has a recoverable snapshot, newest upload first, each
+  upload expanded into its individual snapshots (pretty stamp · user · file
+  count). A collection `<select>` scopes the view, defaulting to whatever the
+  user last drilled into (`selectedCollectionKey`) and falling back to the first
+  discovered collection. **Restore stays in the Tag workspace** (it needs the
+  upload's bucket/prefix/identity context): a per-upload "Restore… →" routes
+  there via the new `openUploadForSnapshots` store action.
+
+**Routing into the per-upload restore dialog (`src/store.ts`, `src/sections/Tag.tsx`).**
+Added a one-shot `pendingSnapshots` flag + `openUploadForSnapshots(collectionKey,
+uploadPrefix)` / `clearPendingSnapshots` actions. `openUploadForSnapshots` sets
+collection + upload + `section: 'tag'` atomically (a plain `selectCollection`
+resets the upload, so it can't be reused here) and raises the flag; the Tag
+workspace consumes it once in an effect to auto-open its existing
+`SnapshotsDialog` (the P5 dry-run-first, conflict-aware conditional-replacement
+restore), then clears it. So History is the cross-upload *discovery* surface and
+the Tag dialog remains the single restore code path — no duplicate restore flow.
+
+**S3 + query plumbing (`src/lib/s3.ts`, `src/lib/queries.ts`).**
+`listCollectionSnapshots(cfg, bucket, uuid)` lists the collection's uploads
+(`listUploads`) and maps `listSnapshots` over them, dropping uploads with no
+complete snapshot; a per-upload listing failure (e.g. a CORS-blocked prefix) is
+swallowed so one bad upload doesn't hide the rest. Surfaced via the
+`connectionId`-scoped `useCollectionSnapshots` query (same caching discipline as
+every other read). Fan-out is fine for the Educational Test collection; a very
+large collection would issue one snapshot-walk per upload — noted below.
+
+**Browse + Settings.** Reviewed; both were built complete in P0 (Browse:
+collection → upload → presigned image grid + species-vocabulary status line;
+Settings: identity, dry-run default, burst threshold, connection/disconnect) and
+needed no change for P6. Left untouched deliberately rather than churned.
+
+**No new tests.** The new code is read-IO orchestration (`listCollectionSnapshots`)
+and UI wiring (History sections, store flag, Tag effect); consistent with P3/P5,
+UI/IO glue is verified by `check` + `build` + manual check, and the pure-logic
+contracts already covered (`groupDirty` grouping, snapshot manifest filtering in
+`listSnapshots`) are unchanged. `prettyStamp` is intentionally duplicated between
+`SnapshotsDialog.tsx` and `Recovery.tsx` (per-feature duplication over a shared
+helper, per the repo style note).
+
+**Deliberate deferrals / notes (for whoever takes this past MVP):**
+- **Snapshot fan-out at scale.** `listCollectionSnapshots` walks every upload's
+  snapshot prefix. Fine for the test collection; a collection with hundreds of
+  uploads would want a cheaper index (e.g. a per-collection snapshot manifest)
+  or lazy per-upload expansion. Not built — no large collection to justify it.
+- **Restore still lives in the Tag workspace.** History routes there rather than
+  restoring inline, because restore writes and needs the upload's
+  bucket/prefix/identity. This is the intended split, not a gap.
+- **Time-correction UI still unbuilt** (carried from P1–P5). The data fields and
+  the sync emit path exist; the offset/override editors are the main remaining
+  pre-MVP feature outside the phased table.
+- Live CORS / `species.json` presence / `IfMatch` enforcement remain
+  **unverified** (no credentials) — same `.env` + `pnpm --filter sparcd-tagger
+  dev` check every prior phase flagged; with P6 done, the full end-to-end pass
+  to run against a live write-allowed test bucket is: browse → tag → sync (dry
+  then live) → confirm snapshot appears in History → restore it.
+
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key

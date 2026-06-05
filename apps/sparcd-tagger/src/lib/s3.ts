@@ -206,6 +206,17 @@ export async function loadCanonicalState(
 // abandoned partial snapshot and is ignored on recovery.
 const SNAPSHOTS_DIR = '.sparcd-tagger-snapshots/';
 
+// The `<user>/` path segment is percent-encoded on write (see `snapshotPrefixOf`);
+// decode it back, tolerating a malformed value rather than throwing and hiding
+// the whole listing.
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 /** One recoverable snapshot: where it lives + who/when, plus its manifest. */
 export type SnapshotRef = {
   prefix: string; // full `<uploadPrefix>.sparcd-tagger-snapshots/<user>/<stamp>/`
@@ -237,7 +248,7 @@ export async function listSnapshots(
   const refs: SnapshotRef[] = [];
   await Promise.all(
     userDirs.map(async (userDir) => {
-      const user = decodeURIComponent(userDir.slice(root.length).replace(/\/$/, ''));
+      const user = safeDecode(userDir.slice(root.length).replace(/\/$/, ''));
       const stampDirs = await client.listCommonPrefixes(bucket, userDir);
       await Promise.all(
         stampDirs.map(async (stampDir) => {
@@ -256,6 +267,39 @@ export async function listSnapshots(
   );
   // Stamp is `uuuu-MM-ddTHH-mm-ss`, lexically sortable; newest first.
   return refs.sort((a, b) => b.stamp.localeCompare(a.stamp) || a.user.localeCompare(b.user));
+}
+
+export type UploadSnapshots = {
+  uploadPrefix: string;
+  uploadStamp: string;
+  snapshots: SnapshotRef[];
+};
+
+/**
+ * List recoverable snapshots across every upload in a collection — the History
+ * section's cross-upload browser. Reads only; the actual restore still happens
+ * per-upload in the Tag workspace's Snapshots dialog. Uploads with no complete
+ * snapshot are omitted. A per-upload listing failure (e.g. a CORS-blocked
+ * prefix) is swallowed so one bad upload doesn't hide the rest.
+ */
+export async function listCollectionSnapshots(
+  cfg: S3Config,
+  bucket: string,
+  uuid: string,
+): Promise<UploadSnapshots[]> {
+  const uploads = await listUploads(cfg, bucket, uuid);
+  const out = await Promise.all(
+    uploads.map(async (u) => {
+      let snapshots: SnapshotRef[] = [];
+      try {
+        snapshots = await listSnapshots(cfg, bucket, u.prefix);
+      } catch {
+        // Keep aggregating; an unreadable upload contributes no snapshots.
+      }
+      return { uploadPrefix: u.prefix, uploadStamp: u.stamp, snapshots };
+    }),
+  );
+  return out.filter((u) => u.snapshots.length > 0);
 }
 
 /** Load the three canonical bodies of one snapshot, to restore them in place. */

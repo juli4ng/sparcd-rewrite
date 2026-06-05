@@ -125,6 +125,20 @@ export async function listDirtyDrafts(): Promise<DraftRecord[]> {
   return db.drafts.filter((d) => d.dirty).toArray();
 }
 
+/** Whether one upload has any unsaved (dirty) drafts — gates re-grounding so an
+ *  in-progress edit's conflict base isn't advanced by a background refetch. */
+export async function hasDirtyDraftsForUpload(
+  bucket: string,
+  uploadPrefix: string,
+): Promise<boolean> {
+  const n = await db.drafts
+    .where('[bucket+uploadPrefix]')
+    .equals([bucket, uploadPrefix])
+    .filter((d) => d.dirty)
+    .count();
+  return n > 0;
+}
+
 export async function putDraft(record: DraftRecord): Promise<void> {
   await db.drafts.put(record);
 }

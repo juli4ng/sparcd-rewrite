@@ -15,7 +15,10 @@ export type Effective = {
 };
 
 export function effectiveOf(img: TagImage, draft: DraftRecord | undefined): Effective {
-  if (draft) {
+  // Only a *dirty* draft is authoritative. A clean draft (one already captured
+  // by a prior sync) carries no pending intent, so defer to the canonical base
+  // — otherwise a stale clean draft would shadow a later remote change.
+  if (draft && draft.dirty) {
     return {
       label: draft.label,
       commonName: draft.commonName,
@@ -37,7 +40,9 @@ export function effectiveOf(img: TagImage, draft: DraftRecord | undefined): Effe
   return { label: '', commonName: '', count: 0, questionable: false, requested: '', source: 'none' };
 }
 
-/** True when a draft has diverged from the image's canonical base (the unsaved dot). */
-export function isEditedFromBase(img: TagImage, eff: Effective): boolean {
-  return eff.source === 'draft' && eff.label !== img.baseLabel;
+/** True when the image has an unsaved local edit (the unsaved dot). `source` is
+ *  `'draft'` only for a dirty draft, so any pending edit — tag, count, time, or
+ *  questionable — surfaces, not just a changed species. */
+export function isEditedFromBase(eff: Effective): boolean {
+  return eff.source === 'draft';
 }

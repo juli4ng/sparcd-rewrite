@@ -249,7 +249,7 @@ function ListCell({
         </span>
       </span>
       <span className="shrink-0 flex flex-col items-end gap-0.5">
-        {isEditedFromBase(img, eff) && (
+        {isEditedFromBase(eff) && (
           <span className="w-1.5 h-1.5 rounded-full bg-accent" title="unsaved edit" />
         )}
         {eff.questionable && (
@@ -298,7 +298,7 @@ function GridCell({
         <Thumb objectKey={img.key} alt={img.fileName} />
       </span>
       <span className="mt-1 flex items-center gap-1">
-        {isEditedFromBase(img, eff) && (
+        {isEditedFromBase(eff) && (
           <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" title="unsaved edit" />
         )}
         {eff.questionable && (

@@ -20,6 +20,7 @@ import type { SyncJournal } from '../src/lib/syncJournal';
 import { sha256Hex } from '../src/lib/hash';
 import type { TagImage } from '../src/lib/workspace';
 import type { DraftRecord } from '../src/lib/db';
+import { blankDraft } from '../src/lib/drafts';
 
 const PREFIX = 'Collections/uuid/Uploads/2024.01.15.10.00.00/';
 const DEP = 'uuid:SAN15';
@@ -133,9 +134,9 @@ function fakeIO(
 }
 
 const baseFrom = (c: CanonicalState) => ({
-  media: { etag: c.media.etag },
-  observations: { etag: c.observations.etag },
-  uploadMeta: { etag: c.uploadMeta.etag },
+  media: { etag: c.media.etag, hash: c.media.hash },
+  observations: { etag: c.observations.etag, hash: c.observations.hash },
+  uploadMeta: { etag: c.uploadMeta.etag, hash: c.uploadMeta.hash },
 });
 
 describe('buildSyncPlan', () => {
@@ -162,6 +163,33 @@ describe('buildSyncPlan', () => {
     );
     expect(plan.tagEdits).toHaveLength(0);
     expect(plan.timeEdits).toHaveLength(0);
+  });
+
+  it('does not detag a base-tagged image when questionable is toggled (seeded draft)', () => {
+    // Mirror the real store path: toggling questionable on an already-tagged
+    // image creates a draft *seeded from the base tag*, then flips questionable.
+    // A draft that did not carry the base label forward would be misclassified
+    // as a detag — the regression this guards.
+    const seeded = blankDraft({ bucket: 'sparcd-x', uploadPrefix: PREFIX }, K1, DEP, {
+      label: 'Puma concolor',
+      commonName: '',
+      count: 1,
+      requestedSpecies: '',
+    });
+    const plan = buildSyncPlan(IMAGES, { [K1]: { ...seeded, questionable: true, dirty: true } }, null);
+    expect(plan.summary.removals).toBe(0);
+    expect(plan.tagEdits).toHaveLength(0);
+    expect(plan.timeEdits).toHaveLength(0);
+  });
+
+  it('ignores a clean (already-synced) draft so it is not re-applied', () => {
+    // A non-dirty draft carries no pending intent; it must defer to the base.
+    const plan = buildSyncPlan(
+      IMAGES,
+      { [K2]: draft({ mediaPath: K2, label: 'Canis latrans', commonName: 'Coyote', count: 1, dirty: false }) },
+      null,
+    );
+    expect(plan.tagEdits).toHaveLength(0);
   });
 
   it('emits a time-only media edit for a per-image override that keeps the tag', () => {
@@ -229,14 +257,18 @@ describe('runSync — live write path', () => {
     ]);
     expect(rec.replaces[0].etag).toBe('"obs-1"'); // wrote against the reviewed ETag
     expect(rec.cleared).toBe(1);
-    if (res.status === 'synced') expect(res.summary.additions).toBe(1);
+    if (res.status === 'synced') {
+      expect(res.summary.additions).toBe(1);
+      // Reports exactly the written media so the caller clears only those drafts.
+      expect(res.syncedMediaIds).toEqual([K2]);
+    }
   });
 
   it('enters the conflict view when a canonical file changed since grounding', async () => {
     const cur = await canonical();
     const { io, rec } = fakeIO(cur);
     const plan = buildSyncPlan(IMAGES, ADD_DRAFTS, null);
-    const staleBase = { ...baseFrom(cur), observations: { etag: '"obs-OLD"' } };
+    const staleBase = { ...baseFrom(cur), observations: { etag: '"obs-OLD"', hash: cur.observations.hash } };
     const res = await runSync(
       { bucket: 'sparcd-x', uploadPrefix: PREFIX, user: 'jg', base: staleBase, plan, dryRun: false },
       io,
@@ -310,9 +342,9 @@ describe('runSync — resume a partial sync from the journal', () => {
       user: 'jg',
       startedAt: NOW.toISOString(),
       objects: [
-        { role: 'media', key: `${PREFIX}media.csv`, baseETag: '"media-1"', body: cur.media.text, intendedHash: cur.media.hash, status: 'written', newETag: '"media-2"' },
-        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', body: 'OBSBODY', intendedHash: await sha256Hex('OBSBODY'), status: 'pending' },
-        { role: 'uploadMeta', key: `${PREFIX}UploadMeta.json`, baseETag: '"meta-1"', body: 'METABODY', intendedHash: await sha256Hex('METABODY'), status: 'pending' },
+        { role: 'media', key: `${PREFIX}media.csv`, baseETag: '"media-1"', baseHash: cur.media.hash, body: cur.media.text, intendedHash: cur.media.hash, status: 'written', newETag: '"media-2"' },
+        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', baseHash: cur.observations.hash, body: 'OBSBODY', intendedHash: await sha256Hex('OBSBODY'), status: 'pending' },
+        { role: 'uploadMeta', key: `${PREFIX}UploadMeta.json`, baseETag: '"meta-1"', baseHash: cur.uploadMeta.hash, body: 'METABODY', intendedHash: await sha256Hex('METABODY'), status: 'pending' },
       ],
     };
     const res = await runSync(
@@ -336,7 +368,7 @@ describe('runSync — resume a partial sync from the journal', () => {
       user: 'jg',
       startedAt: NOW.toISOString(),
       objects: [
-        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', body: 'OBSBODY', intendedHash: await sha256Hex('OBSBODY'), status: 'pending' },
+        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', baseHash: cur.observations.hash, body: 'OBSBODY', intendedHash: await sha256Hex('OBSBODY'), status: 'pending' },
       ],
     };
     const res = await runSync(

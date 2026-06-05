@@ -228,8 +228,8 @@ describe('runRestore — resumes a prior partial journal before a fresh restore'
       user: 'jg',
       startedAt: NOW.toISOString(),
       objects: [
-        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', body: SNAP_OBS, intendedHash: await sha256Hex(SNAP_OBS), status: 'pending' },
-        { role: 'uploadMeta', key: `${PREFIX}UploadMeta.json`, baseETag: '"meta-1"', body: SNAP_META, intendedHash: await sha256Hex(SNAP_META), status: 'pending' },
+        { role: 'observations', key: `${PREFIX}observations.csv`, baseETag: '"obs-1"', baseHash: cur.observations.hash, body: SNAP_OBS, intendedHash: await sha256Hex(SNAP_OBS), status: 'pending' },
+        { role: 'uploadMeta', key: `${PREFIX}UploadMeta.json`, baseETag: '"meta-1"', baseHash: cur.uploadMeta.hash, body: SNAP_META, intendedHash: await sha256Hex(SNAP_META), status: 'pending' },
       ],
     };
     const res = await runRestore(

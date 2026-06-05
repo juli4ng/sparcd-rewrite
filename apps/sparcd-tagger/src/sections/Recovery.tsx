@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { useDraftStore } from '../lib/drafts';
+import { useCollections, useCollectionSnapshots } from '../lib/queries';
 import { listDirtyDrafts, type DraftRecord } from '../lib/db';
 
-// Local recovery view (History section). This surfaces every upload that still
-// has unsaved drafts in IndexedDB so a closed/reopened tab can jump back to its
-// work or discard it. The S3 snapshot/version recovery flow (restoring prior
-// canonical snapshots, P5) is per-upload and lives in the Tag workspace's
-// "Snapshots…" action, where the upload's bucket/prefix context exists; a
-// cross-upload snapshot browser is the P6 History section's job.
+// History section. Two recovery surfaces, both read-only here:
+//   1. Unsynced local edits — uploads with dirty drafts in this browser's
+//      IndexedDB, so a closed/reopened tab can jump back to its work or discard.
+//   2. Synced snapshots — the cross-upload browser of immutable pre-change
+//      snapshots written before each S3 sync. Listing is read-only; the actual
+//      restore needs the upload's bucket/prefix/identity context, so picking one
+//      routes into the Tag workspace and opens its "Snapshots…" dialog (the P5
+//      conditional-replacement restore flow).
+
+const kicker = 'font-body text-[11px] font-[600] tracking-[0.16em] uppercase text-inkSoft';
 
 type Group = {
   bucket: string;
@@ -53,6 +58,26 @@ function groupDirty(rows: DraftRecord[]): Group[] {
 }
 
 export function Recovery() {
+  return (
+    <div className="h-full overflow-y-auto p-6">
+      <div className="max-w-[760px] mx-auto space-y-10">
+        <header>
+          <h1 className="font-display text-[22px] text-ink">History</h1>
+          <p className="text-[13px] text-inkSoft font-body mt-1">
+            Recover unsaved local edits or restore a prior synced snapshot of an upload.
+          </p>
+        </header>
+
+        <LocalEdits />
+        <Snapshots />
+      </div>
+    </div>
+  );
+}
+
+// --- Unsynced local edits ----------------------------------------------------
+
+function LocalEdits() {
   const selectCollection = useStore((s) => s.selectCollection);
   const selectUpload = useStore((s) => s.selectUpload);
   const discardUpload = useDraftStore((s) => s.discardUpload);
@@ -82,67 +107,172 @@ export function Recovery() {
   };
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="max-w-[760px] mx-auto space-y-4">
-        <header>
-          <h1 className="font-display text-[22px] text-ink">Recovery</h1>
-          <p className="text-[13px] text-inkSoft font-body mt-1">
-            Uploads with unsaved local edits, kept in this browser. Reopen one to keep tagging or
-            discard its local changes. To restore a prior <em>synced</em> snapshot, open the upload
-            and use the Tag workspace’s “Snapshots…” action.
-          </p>
-        </header>
-
-        {groups === null && <p className="text-[13px] text-inkMute font-body">Scanning local drafts…</p>}
-
-        {groups && groups.length === 0 && (
-          <p className="text-[14px] text-inkMute font-body border border-ruleSoft bg-panel px-4 py-6 text-center">
-            No unsaved local edits. Everything here is clean.
-          </p>
-        )}
-
-        {groups && groups.length > 0 && (
-          <ul className="space-y-2">
-            {groups.map((g) => (
-              <li
-                key={`${g.bucket}::${g.uploadPrefix}`}
-                className="border border-rule bg-panel px-4 py-3 flex items-center gap-4"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="font-mono text-[14px] text-ink truncate" title={g.uploadPrefix}>
-                    {g.stamp}
-                  </div>
-                  <div className="font-mono text-[12px] text-inkMute truncate" title={g.bucket}>
-                    {g.bucket}
-                  </div>
-                  <div className="text-[12px] text-inkSoft font-body mt-0.5">
-                    {g.count} unsaved · {g.taggedCount} tagged · edited {shortTime(g.lastEdited)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => open(g)}
-                    className="text-[13px] border border-ink px-3 py-1.5 text-ink hover:bg-panelHover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-                  >
-                    Open →
-                  </button>
-                  <button
-                    onClick={() => void discard(g)}
-                    className="text-[13px] border border-rule px-3 py-1.5 text-inkSoft hover:text-warn hover:border-warn focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-                  >
-                    Discard
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+    <section className="space-y-3">
+      <div>
+        <h2 className={kicker}>Unsynced local edits</h2>
+        <p className="text-[12px] text-inkMute font-body mt-1">
+          Uploads with unsaved edits kept in this browser. Reopen one to keep tagging or discard its
+          local changes.
+        </p>
       </div>
-    </div>
+
+      {groups === null && <p className="text-[13px] text-inkMute font-body">Scanning local drafts…</p>}
+
+      {groups && groups.length === 0 && (
+        <p className="text-[14px] text-inkMute font-body border border-ruleSoft bg-panel px-4 py-6 text-center">
+          No unsaved local edits. Everything here is clean.
+        </p>
+      )}
+
+      {groups && groups.length > 0 && (
+        <ul className="space-y-2">
+          {groups.map((g) => (
+            <li
+              key={`${g.bucket}::${g.uploadPrefix}`}
+              className="border border-rule bg-panel px-4 py-3 flex items-center gap-4"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[14px] text-ink truncate" title={g.uploadPrefix}>
+                  {g.stamp}
+                </div>
+                <div className="font-mono text-[12px] text-inkMute truncate" title={g.bucket}>
+                  {g.bucket}
+                </div>
+                <div className="text-[12px] text-inkSoft font-body mt-0.5">
+                  {g.count} unsaved · {g.taggedCount} tagged · edited {shortTime(g.lastEdited)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => open(g)} className={btnInk}>
+                  Open →
+                </button>
+                <button
+                  onClick={() => void discard(g)}
+                  className="text-[13px] border border-rule px-3 py-1.5 text-inkSoft hover:text-warn hover:border-warn focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  Discard
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
+
+// --- Synced snapshots (cross-upload) -----------------------------------------
+
+function Snapshots() {
+  const cfg = useStore((s) => s.s3Config);
+  const connectionId = useStore((s) => s.connectionId);
+  const selectedCollectionKey = useStore((s) => s.selectedCollectionKey);
+  const openForSnapshots = useStore((s) => s.openUploadForSnapshots);
+
+  const collections = useCollections(cfg, connectionId);
+  // Default the scope to whatever the user last drilled into; otherwise the
+  // first discovered collection once they load.
+  const [scope, setScope] = useState<string | null>(selectedCollectionKey);
+  const scopeKey = scope ?? selectedCollectionKey ?? collections.data?.[0]?.key ?? null;
+
+  const snaps = useCollectionSnapshots(cfg, connectionId, scopeKey);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h2 className={kicker}>Synced snapshots</h2>
+          <p className="text-[12px] text-inkMute font-body mt-1">
+            Immutable pre-change snapshots written before each sync. Pick one to open the upload and
+            restore it.
+          </p>
+        </div>
+        {collections.data && collections.data.length > 0 && (
+          <select
+            value={scopeKey ?? ''}
+            onChange={(e) => setScope(e.target.value)}
+            className="bg-paper border border-rule px-2.5 py-1.5 text-[13px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            {collections.data.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.name ?? c.bucket}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {!scopeKey && !collections.isLoading && (
+        <p className="text-[13px] text-inkMute font-body">No collections visible to these credentials.</p>
+      )}
+      {(collections.isLoading || (scopeKey && snaps.isLoading)) && (
+        <p className="text-[13px] text-inkMute font-body">Listing snapshots…</p>
+      )}
+      {snaps.isError && (
+        <p className="text-[13px] text-warn font-body border border-warn px-3 py-2">
+          {(snaps.error as Error).message}
+        </p>
+      )}
+
+      {snaps.data && snaps.data.length === 0 && (
+        <p className="text-[14px] text-inkMute font-body border border-ruleSoft bg-panel px-4 py-6 text-center">
+          No snapshots in this collection yet. They are created the first time you sync an upload.
+        </p>
+      )}
+
+      {snaps.data && snaps.data.length > 0 && (
+        <ul className="space-y-4">
+          {snaps.data.map((u) => (
+            <li key={u.uploadPrefix} className="border border-rule bg-panel">
+              <div className="flex items-center justify-between gap-4 border-b border-ruleSoft px-4 py-2.5">
+                <div className="min-w-0">
+                  <div className="font-mono text-[14px] text-ink truncate" title={u.uploadPrefix}>
+                    {u.uploadStamp}
+                  </div>
+                  <div className="text-[12px] text-inkSoft font-body">
+                    {u.snapshots.length} snapshot{u.snapshots.length === 1 ? '' : 's'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => openForSnapshots(scopeKey!, u.uploadPrefix)}
+                  className={`${btnInk} shrink-0`}
+                  title="Open this upload and choose a snapshot to restore"
+                >
+                  Restore… →
+                </button>
+              </div>
+              <ul className="divide-y divide-ruleSoft">
+                {u.snapshots.map((s) => (
+                  <li
+                    key={s.prefix}
+                    className="px-4 py-2 flex items-center gap-3 text-[12px] font-body"
+                  >
+                    <span className="font-mono text-[13px] text-ink">{prettyStamp(s.stamp)}</span>
+                    <span className="text-inkSoft">
+                      by <span className="font-mono">{s.user}</span>
+                    </span>
+                    <span className="text-inkMute ml-auto">{s.manifest.files.length} files</span>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+const btnInk =
+  'text-[13px] border border-ink px-3 py-1.5 text-ink hover:bg-panelHover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent';
 
 function shortTime(iso: string): string {
   if (!iso) return '—';
   return iso.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
+}
+
+// Snapshot stamp is `uuuu-MM-ddTHH-mm-ss`; show it as `uuuu-MM-dd HH:MM:SS`.
+function prettyStamp(stamp: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(stamp);
+  return m ? `${m[1]} ${m[2]}:${m[3]}:${m[4]}` : stamp;
 }

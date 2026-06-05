@@ -1,28 +1,26 @@
 import { useStore } from '../store';
-import { useCollections, useUploads, useUploadImages, useSpecies } from '../lib/queries';
-import { Thumb } from '../components/Thumb';
+import { useCollections, useUploads, useSpecies } from '../lib/queries';
 
 const kicker = 'font-body text-[11px] font-[600] tracking-[0.16em] uppercase text-inkSoft';
 
-// Browse is the entry point: pick a collection, pick an upload, see its images.
-// In P0 this is the proof that the tool discovers a collection and reads its
-// images end-to-end; choosing an upload opens the Tag workspace (P1+).
+// Browse is the entry point: pick a collection in the rail, then pick one of
+// its uploads in the main panel — choosing an upload opens the Tag workspace.
 export function Browse() {
   const cfg = useStore((s) => s.s3Config);
   const connectionId = useStore((s) => s.connectionId);
   const collectionKey = useStore((s) => s.selectedCollectionKey);
-  const uploadPrefix = useStore((s) => s.selectedUploadPrefix);
   const selectCollection = useStore((s) => s.selectCollection);
   const selectUpload = useStore((s) => s.selectUpload);
 
   const collections = useCollections(cfg, connectionId);
   const uploads = useUploads(cfg, connectionId, collectionKey);
-  const images = useUploadImages(cfg, connectionId, collectionKey, uploadPrefix);
   const species = useSpecies(cfg, connectionId); // loaded once; surfaced as a status line
+
+  const collection = collections.data?.find((c) => c.key === collectionKey);
 
   return (
     <div className="h-full grid grid-cols-[280px_1fr] min-h-0">
-      {/* Collection + upload rail */}
+      {/* Collection rail */}
       <aside className="border-r border-rule bg-panel overflow-y-auto p-4 space-y-6">
         <section>
           <h2 className={kicker}>Collections</h2>
@@ -47,28 +45,6 @@ export function Browse() {
           </ul>
         </section>
 
-        {collectionKey && (
-          <section>
-            <h2 className={kicker}>Uploads</h2>
-            <Status q={uploads} empty="No uploads in this collection." />
-            <ul className="mt-2 space-y-1">
-              {uploads.data?.map((u) => (
-                <li key={u.prefix}>
-                  <button
-                    onClick={() => selectUpload(u.prefix)}
-                    aria-current={u.prefix === uploadPrefix ? 'true' : undefined}
-                    className={`w-full text-left px-2.5 py-1.5 text-[13px] font-mono border border-transparent hover:bg-panelHover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
-                      u.prefix === uploadPrefix ? 'bg-mark border-rule' : 'text-inkSoft'
-                    }`}
-                  >
-                    {u.stamp}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
         <p className="text-[12px] text-inkMute font-body border-t border-ruleSoft pt-3">
           {species.isLoading && 'Loading species vocabulary…'}
           {species.isError && `Species vocabulary unavailable: ${(species.error as Error).message}`}
@@ -78,35 +54,27 @@ export function Browse() {
         </p>
       </aside>
 
-      {/* Image grid for the chosen upload */}
+      {/* Uploads for the chosen collection */}
       <div className="overflow-y-auto p-5">
-        {!uploadPrefix && (
-          <Empty>Select an upload to preview its images.</Empty>
-        )}
-        {uploadPrefix && (
+        {!collectionKey && <Empty>Select a collection to see its uploads.</Empty>}
+        {collectionKey && (
           <>
-            <div className="flex items-baseline justify-between mb-4">
-              <h1 className="font-display text-[20px] text-ink">
-                {images.data ? `${images.data.length} images` : 'Images'}
-              </h1>
-              <button
-                onClick={() => selectUpload(uploadPrefix)}
-                className="text-[14px] border border-ink px-3 py-1.5 text-ink hover:bg-panelHover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-              >
-                Open in Tag →
-              </button>
-            </div>
-            <Status q={images} empty="This upload has no taggable images." />
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
-              {images.data?.map((img) => (
-                <figure key={img.key} className="space-y-1">
-                  <Thumb objectKey={img.key} alt={img.fileName} />
-                  <figcaption className="text-[11px] font-mono text-inkMute truncate" title={img.fileName}>
-                    {img.fileName}
-                  </figcaption>
-                </figure>
+            <h1 className="font-display text-[20px] text-ink mb-4">
+              {collection?.name ?? collection?.bucket ?? 'Uploads'}
+            </h1>
+            <Status q={uploads} empty="No uploads in this collection." />
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2">
+              {uploads.data?.map((u) => (
+                <li key={u.prefix}>
+                  <button
+                    onClick={() => selectUpload(u.prefix)}
+                    className="w-full text-left px-3 py-2.5 text-[13px] font-mono text-inkSoft border border-rule hover:bg-panelHover hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    {u.stamp}
+                  </button>
+                </li>
               ))}
-            </div>
+            </ul>
           </>
         )}
       </div>

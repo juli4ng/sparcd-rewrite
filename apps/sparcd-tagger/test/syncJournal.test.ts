@@ -16,6 +16,7 @@ const obj = (
   role,
   key: `prefix/${role}`,
   baseETag: `"base-${role}"`,
+  baseHash: `hash-${role}`,
   body: `body-${role}`,
   intendedHash: `hash-${role}`,
   status,

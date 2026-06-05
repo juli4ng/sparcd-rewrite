@@ -16,8 +16,14 @@ export const GHOST = { label: 'Casper', commonName: 'Ghost' } as const;
 
 export type UploadCtx = { bucket: string; uploadPrefix: string };
 
-/** One image a batch operation targets: its media path + deployment. */
-export type TagTarget = { mediaPath: string; deploymentId: string };
+/** The canonical base tag for an image, used only to seed a brand-new draft. */
+export type BaseSeed = { label: string; commonName: string; count: number; requestedSpecies: string };
+
+/** One image a batch operation targets: its media path + deployment, plus the
+ *  optional canonical base tag. The base seeds a *freshly created* draft so a
+ *  partial edit (e.g. toggling questionable on an already-tagged image) never
+ *  drops the existing species — a draft is the image's full intended state. */
+export type TagTarget = { mediaPath: string; deploymentId: string; base?: BaseSeed };
 
 /** The tag a UI action applies to an image. */
 export type AppliedTag = {
@@ -48,8 +54,10 @@ type DraftState = {
   /** Flush every pending debounced Dexie write now (manual Cmd/Ctrl+S confirm). */
   flushSaves: () => Promise<void>;
   discardUpload: (ctx: UploadCtx) => Promise<void>;
-  /** Clear `dirty` on every draft after a successful sync (they now match the new base). */
-  markUploadSynced: (ctx: UploadCtx) => Promise<void>;
+  /** Clear `dirty` on the drafts that were just synced (they now match the new
+   *  base). Drafts not in the sync — e.g. a questionable-only flag, which has no
+   *  canonical target — are left dirty so they stay surfaced as unsaved. */
+  markUploadSynced: (ctx: UploadCtx, mediaPaths: string[]) => Promise<void>;
 };
 
 // Per-record debounce so a burst of keystrokes coalesces into one Dexie write.
@@ -68,17 +76,24 @@ function scheduleSave(record: DraftRecord): void {
   );
 }
 
-function blankDraft(ctx: UploadCtx, mediaPath: string, deploymentId: string): DraftRecord {
+/** A fresh draft for an image, seeded from its canonical base tag when one is
+ *  supplied so a partial edit preserves the existing species. */
+export function blankDraft(
+  ctx: UploadCtx,
+  mediaPath: string,
+  deploymentId: string,
+  base?: BaseSeed,
+): DraftRecord {
   return {
     id: draftId(ctx.bucket, ctx.uploadPrefix, mediaPath),
     bucket: ctx.bucket,
     uploadPrefix: ctx.uploadPrefix,
     mediaPath,
     deploymentId,
-    label: '',
-    commonName: '',
-    count: 0,
-    requestedSpecies: '',
+    label: base?.label ?? '',
+    commonName: base?.commonName ?? '',
+    count: base?.count ?? 0,
+    requestedSpecies: base?.requestedSpecies ?? '',
     freeTags: '',
     questionable: false,
     timeOverride: null,
@@ -95,8 +110,8 @@ export const useDraftStore = create<DraftState>((set, get) => {
     const now = new Date().toISOString();
     const updates: Record<string, DraftRecord> = {};
     const cur = get().drafts;
-    for (const { mediaPath, deploymentId } of targets) {
-      const prev = cur[mediaPath] ?? blankDraft(ctx, mediaPath, deploymentId);
+    for (const { mediaPath, deploymentId, base } of targets) {
+      const prev = cur[mediaPath] ?? blankDraft(ctx, mediaPath, deploymentId, base);
       const next: DraftRecord = {
         ...prev,
         deploymentId: deploymentId || prev.deploymentId,
@@ -185,22 +200,28 @@ export const useDraftStore = create<DraftState>((set, get) => {
       if (get().loadedKey === uploadId(ctx.bucket, ctx.uploadPrefix)) set({ drafts: {} });
     },
 
-    markUploadSynced: async (ctx) => {
+    markUploadSynced: async (ctx, mediaPaths) => {
       void ctx;
-      // Drop any debounced writes — we are about to rewrite the touched records.
-      for (const [, timer] of pending) clearTimeout(timer);
-      pending.clear();
-      const next: Record<string, DraftRecord> = {};
+      if (!mediaPaths.length) return;
+      const next = { ...get().drafts };
       const changed: DraftRecord[] = [];
-      for (const [path, rec] of Object.entries(get().drafts)) {
-        if (rec.dirty) {
-          const clean = { ...rec, dirty: false };
-          next[path] = clean;
-          changed.push(clean);
-        } else next[path] = rec;
+      for (const path of mediaPaths) {
+        const rec = next[path];
+        if (!rec?.dirty) continue;
+        // Drop any debounced write for this record — we rewrite it clean now.
+        const timer = pending.get(rec.id);
+        if (timer) {
+          clearTimeout(timer);
+          pending.delete(rec.id);
+        }
+        const clean = { ...rec, dirty: false };
+        next[path] = clean;
+        changed.push(clean);
       }
-      set({ drafts: next });
-      if (changed.length) await db.drafts.bulkPut(changed);
+      if (changed.length) {
+        set({ drafts: next });
+        await db.drafts.bulkPut(changed);
+      }
     },
   };
 });

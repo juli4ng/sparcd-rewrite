@@ -19,6 +19,7 @@ export type JournalObject = {
   role: CanonicalRole;
   key: string; // full object key
   baseETag: string; // the IfMatch ETag this object writes against
+  baseHash: string; // sha256 of the base bytes — verified on resume for pending objects
   body: string; // the exact bytes to write (canonical CSVs/JSON are small)
   intendedHash: string; // sha256(body) — verified on resume for written objects
   status: JournalObjectStatus;
@@ -49,8 +50,9 @@ export type ResumeDecision =
  *  - A `written` object must still hash to its intended content; if it changed
  *    remotely, another writer touched a partially-synced object → conflict
  *    repair, never a blind continue.
- *  - A `pending` object must still match the base ETag it was journaled against;
- *    if it changed, the base the user reviewed is stale → conflict.
+ *  - A `pending` object must still match the base ETag *and* hash it was
+ *    journaled against; if either changed, the base the user reviewed is stale
+ *    → conflict.
  *  - Otherwise continue from the first pending object forward.
  */
 export function planResume(
@@ -71,7 +73,7 @@ export function planResume(
       }
     } else {
       if (firstPending === -1) firstPending = i;
-      if (remote.etag !== obj.baseETag) {
+      if (remote.etag !== obj.baseETag || remote.hash !== obj.baseHash) {
         return {
           kind: 'conflict',
           role: obj.role,

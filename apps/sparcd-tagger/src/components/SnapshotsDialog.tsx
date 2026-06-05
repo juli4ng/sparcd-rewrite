@@ -29,9 +29,12 @@ export function SnapshotsDialog({ ctx, onClose }: { ctx: UploadCtx; onClose: () 
   });
 
   const [picked, setPicked] = useState<SnapshotRef | null>(null);
+  // A live restore must not be dismissable mid-write (it would keep writing
+  // invisibly); the RestorePane reports its busy state up so close is blocked.
+  const [busy, setBusy] = useState(false);
 
   return (
-    <Backdrop onClose={onClose}>
+    <Backdrop onClose={busy ? undefined : onClose}>
       <div className="w-[520px] bg-paper border border-ink shadow-xl">
         <header className="flex items-center justify-between border-b border-rule px-5 h-12">
           <h2 className="font-display text-[18px] text-ink">
@@ -39,7 +42,8 @@ export function SnapshotsDialog({ ctx, onClose }: { ctx: UploadCtx; onClose: () 
           </h2>
           <button
             onClick={onClose}
-            className="text-inkMute hover:text-ink text-[18px] leading-none"
+            disabled={busy}
+            className="text-inkMute hover:text-ink text-[18px] leading-none disabled:opacity-30"
             aria-label="Close"
           >
             ×
@@ -47,7 +51,13 @@ export function SnapshotsDialog({ ctx, onClose }: { ctx: UploadCtx; onClose: () 
         </header>
 
         {picked ? (
-          <RestorePane ctx={ctx} snapshot={picked} onBack={() => setPicked(null)} onClose={onClose} />
+          <RestorePane
+            ctx={ctx}
+            snapshot={picked}
+            onBack={() => setPicked(null)}
+            onClose={onClose}
+            onBusyChange={setBusy}
+          />
         ) : (
           <div className="px-5 py-4 space-y-3 text-[14px] text-ink font-body max-h-[60vh] overflow-y-auto">
             <p className="text-[13px] text-inkSoft">
@@ -112,11 +122,13 @@ function RestorePane({
   snapshot,
   onBack,
   onClose,
+  onBusyChange,
 }: {
   ctx: UploadCtx;
   snapshot: SnapshotRef;
   onBack: () => void;
   onClose: () => void;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const cfg = useStore((s) => s.s3Config);
   const user = useStore((s) => s.taggerUser).trim();
@@ -124,7 +136,6 @@ function RestorePane({
   const setDryRun = useStore((s) => s.setDryRun);
   const setSyncState = useStore((s) => s.setSyncState);
   const connectionId = useStore((s) => s.connectionId);
-  const markUploadSynced = useDraftStore((s) => s.markUploadSynced);
   const discardUpload = useDraftStore((s) => s.discardUpload);
   const queryClient = useQueryClient();
 
@@ -174,9 +185,9 @@ function RestorePane({
       setResult(r);
       setSyncState(syncStateFor(r, dryRun));
       if (r.status === 'synced' && !dryRun) {
-        // Local drafts now diff against the restored base; mark them clean is
-        // wrong (they may still differ), so just refresh the workspace view.
-        await markUploadSynced(ctx);
+        // Leave local drafts as-is: after a restore they diff against the
+        // restored base and may still differ, so marking them clean would be
+        // wrong. Just refresh the workspace view; the user re-syncs or discards.
         await queryClient.invalidateQueries({ queryKey: ['tagImages', connectionId] });
       }
     } catch (e) {
@@ -198,6 +209,12 @@ function RestorePane({
   const isConflict = result?.status === 'conflict';
   const isNoop = result?.status === 'noop';
   const canWrite = !!user && !isConflict && !isNoop && !error;
+
+  // Block the dialog's close affordances while busy; release on unmount (back).
+  useEffect(() => {
+    onBusyChange(busy);
+  }, [busy, onBusyChange]);
+  useEffect(() => () => onBusyChange(false), [onBusyChange]);
 
   return (
     <>

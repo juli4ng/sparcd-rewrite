@@ -82,7 +82,9 @@ export function SyncDialog({
       setResult(r);
       setSyncState(syncStateFor(r, dryRun));
       if (r.status === 'synced' && !dryRun) {
-        await markUploadSynced(ctx);
+        // Clear dirty only on the drafts actually written — questionable-only
+        // drafts (no canonical target) stay surfaced as unsaved.
+        await markUploadSynced(ctx, r.syncedMediaIds ?? []);
         await queryClient.invalidateQueries({ queryKey: ['tagImages', connectionId] });
       }
     } catch (e) {

@@ -35,6 +35,8 @@ export function Tag() {
   const collectionKey = useStore((s) => s.selectedCollectionKey);
   const uploadPrefix = useStore((s) => s.selectedUploadPrefix);
   const burstThreshold = useStore((s) => s.burstThresholdSec);
+  const pendingSnapshots = useStore((s) => s.pendingSnapshots);
+  const clearPendingSnapshots = useStore((s) => s.clearPendingSnapshots);
 
   const images = useTagImages(cfg, connectionId, collectionKey, uploadPrefix);
   const species = useSpecies(cfg, connectionId);
@@ -88,6 +90,15 @@ export function Tag() {
     setSelected(new Set());
   }, [uploadPrefix, images.data]);
 
+  // History routes here with `pendingSnapshots` set to jump straight into the
+  // recovery dialog for the chosen upload; consume the flag once.
+  useEffect(() => {
+    if (pendingSnapshots) {
+      setShowSnapshots(true);
+      clearPendingSnapshots();
+    }
+  }, [pendingSnapshots, clearPendingSnapshots]);
+
   const { overrides, assignKey, clearKey } = useKeyBindings();
   const speciesList = species.data?.species ?? [];
 
@@ -121,7 +132,18 @@ export function Tag() {
     return idx
       .map((i) => list[i])
       .filter(Boolean)
-      .map((img) => ({ mediaPath: img.key, deploymentId: img.deploymentId }));
+      .map((img) => ({
+        mediaPath: img.key,
+        deploymentId: img.deploymentId,
+        // Seed a fresh draft from the canonical base so a partial edit (e.g.
+        // toggling questionable) keeps the image's existing species.
+        base: {
+          label: img.baseLabel,
+          commonName: img.baseCommonName,
+          count: img.baseCount,
+          requestedSpecies: img.baseRequested,
+        },
+      }));
   };
 
   const apply = (tag: AppliedTag) => {

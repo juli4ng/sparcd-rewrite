@@ -27,6 +27,10 @@ type TaggerState = {
   selectedCollectionKey: string | null; // `${bucket}::${uuid}`
   selectedUploadPrefix: string | null; // full `Collections/<uuid>/Uploads/<stamp>/`
 
+  // Set when History routes to an upload to restore a snapshot: the Tag
+  // workspace consumes it once to auto-open its Snapshots dialog, then clears it.
+  pendingSnapshots: boolean;
+
   // Settings (the login gate stays three-field; identity + dry-run live here).
   taggerUser: string; // logical userId for snapshot paths + editComments
   dryRun: boolean; // on by default; P4 sync logs and writes nothing until off
@@ -38,6 +42,8 @@ type TaggerState = {
   toggleTheme: () => void;
   selectCollection: (key: string | null) => void;
   selectUpload: (prefix: string | null) => void;
+  openUploadForSnapshots: (collectionKey: string, uploadPrefix: string) => void;
+  clearPendingSnapshots: () => void;
   setSyncState: (state: SyncState) => void;
   setTaggerUser: (value: string) => void;
   setDryRun: (value: boolean) => void;
@@ -52,6 +58,7 @@ export const useStore = create<TaggerState>((set) => ({
   syncState: 'local-only',
   selectedCollectionKey: null,
   selectedUploadPrefix: null,
+  pendingSnapshots: false,
   taggerUser: '',
   dryRun: true,
   burstThresholdSec: 60,
@@ -81,6 +88,15 @@ export const useStore = create<TaggerState>((set) => ({
     set({ selectedCollectionKey: key, selectedUploadPrefix: null, syncState: 'local-only' }),
   selectUpload: (prefix) =>
     set({ selectedUploadPrefix: prefix, section: prefix ? 'tag' : 'browse', syncState: 'local-only' }),
+  openUploadForSnapshots: (collectionKey, uploadPrefix) =>
+    set({
+      selectedCollectionKey: collectionKey,
+      selectedUploadPrefix: uploadPrefix,
+      section: 'tag',
+      syncState: 'local-only',
+      pendingSnapshots: true,
+    }),
+  clearPendingSnapshots: () => set({ pendingSnapshots: false }),
   setSyncState: (state) => set({ syncState: state }),
   setTaggerUser: (value) => set({ taggerUser: value }),
   setDryRun: (value) => set({ dryRun: value }),

@@ -8,15 +8,17 @@ import {
   listCollections,
   listUploads,
   listUploadImages,
+  listCollectionSnapshots,
   loadCanonicalState,
   parseCollectionKey,
   type CollectionRef,
   type UploadRef,
   type UploadImage,
+  type UploadSnapshots,
 } from './s3';
 import { fetchSpecies, type SpeciesResult } from './species';
 import { buildTagImages, type TagImage } from './workspace';
-import { groundUpload } from './db';
+import { groundUpload, getUpload, hasDirtyDraftsForUpload } from './db';
 
 export function useCollections(cfg: S3Config | null, connectionId: number) {
   return useQuery<CollectionRef[]>({
@@ -74,7 +76,15 @@ export function useTagImages(
     queryFn: async () => {
       const { bucket } = parseCollectionKey(collectionKey!);
       const state = await loadCanonicalState(cfg!, bucket, uploadPrefix!);
-      await groundUpload(bucket, uploadPrefix!, state);
+      // Pin the conflict base to the session: only (re-)ground when the upload
+      // has no base yet or no unsaved edits. Once edits exist the base is frozen,
+      // so a background refetch can't silently absorb a remote change — drift
+      // surfaces as a conflict at sync. Post-sync/restore re-grounding is
+      // explicit (in syncRunner) and bypasses this.
+      const existing = await getUpload(bucket, uploadPrefix!);
+      if (!existing?.mediaETag || !(await hasDirtyDraftsForUpload(bucket, uploadPrefix!))) {
+        await groundUpload(bucket, uploadPrefix!, state);
+      }
       return buildTagImages({
         mediaCsv: state.media.text,
         observationsCsv: state.observations.text,
@@ -82,6 +92,25 @@ export function useTagImages(
     },
     enabled: !!cfg && !!collectionKey && !!uploadPrefix,
     staleTime: 60 * 1000,
+    retry: 1,
+  });
+}
+
+/** Every upload in a collection that has a recoverable snapshot — the History
+ *  section's cross-upload recovery browser. Reads only. */
+export function useCollectionSnapshots(
+  cfg: S3Config | null,
+  connectionId: number,
+  collectionKey: string | null,
+) {
+  return useQuery<UploadSnapshots[]>({
+    queryKey: ['collectionSnapshots', connectionId, collectionKey],
+    queryFn: () => {
+      const { bucket, uuid } = parseCollectionKey(collectionKey!);
+      return listCollectionSnapshots(cfg!, bucket, uuid);
+    },
+    enabled: !!cfg && !!collectionKey,
+    staleTime: 30 * 1000,
     retry: 1,
   });
 }

@@ -96,7 +96,10 @@ export function buildSyncPlan(
   const summary: DiffSummary = { additions: 0, modifications: 0, removals: 0, timeCorrections: 0 };
 
   for (const img of images) {
-    const d = drafts[img.key];
+    // Only a dirty draft carries pending intent; a clean (already-synced) draft
+    // must defer to the canonical base so it is never re-applied over a remote
+    // change it didn't make.
+    const d = drafts[img.key]?.dirty ? drafts[img.key] : undefined;
     const label = String(effField(d, img.baseLabel, 'label'));
     const count = Number(effField(d, img.baseCount, 'count'));
     const commonName = String(effField(d, img.baseCommonName, 'commonName'));
@@ -169,8 +172,11 @@ export function snapshotStamp(d: Date): string {
   );
 }
 
+// The user id is a free-text identity, so it is percent-encoded into the key —
+// a `/` or other path-significant character can't break the two-level
+// `<user>/<stamp>/` layout the snapshot reader walks. The reader decodes it back.
 export const snapshotPrefixOf = (uploadPrefix: string, user: string, stamp: string): string =>
-  `${uploadPrefix}.sparcd-tagger-snapshots/${user}/${stamp}/`;
+  `${uploadPrefix}.sparcd-tagger-snapshots/${encodeURIComponent(user)}/${stamp}/`;
 
 // --- Orchestrator ----------------------------------------------------------
 
@@ -207,7 +213,15 @@ const byteLen = (s: string): number => new TextEncoder().encode(s).length;
 export type SyncResult =
   | { status: 'noop' }
   | { status: 'dry-run'; summary: DiffSummary; snapshotPrefix: string; writes: PlannedWrite[] }
-  | { status: 'synced'; summary: DiffSummary; newETags: Partial<Record<CanonicalRole, string>> }
+  | {
+      status: 'synced';
+      summary: DiffSummary;
+      newETags: Partial<Record<CanonicalRole, string>>;
+      /** The media IDs written to canonical, so the caller can clear exactly
+       *  those drafts. Absent on a journal resume (the journal carries bodies,
+       *  not per-image edits). */
+      syncedMediaIds?: string[];
+    }
   | { status: 'conflict'; role: CanonicalRole; reason: string }
   | { status: 'unsupported'; message: string };
 
@@ -215,8 +229,10 @@ export type SyncParams = {
   bucket: string;
   uploadPrefix: string;
   user: string;
-  /** The grounded base ETags the user reviewed (per role). */
-  base: Record<CanonicalRole, { etag: string }>;
+  /** The grounded base ETag + content hash the user reviewed (per role). Both
+   *  are checked pre-write so a remote change is caught even if the backend's
+   *  ETag scheme is unreliable. */
+  base: Record<CanonicalRole, { etag: string; hash: string }>;
   plan: SyncPlan;
   dryRun: boolean;
   /** A journal left by a prior partial sync, to resume instead of starting fresh. */
@@ -424,6 +440,7 @@ async function commitWrites(io: SyncIO, c: CommitCtx, summary: DiffSummary): Pro
       role: w.role,
       key: key(c.uploadPrefix, w.role),
       baseETag: c.current[w.role].etag,
+      baseHash: c.current[w.role].hash,
       body: w.body,
       intendedHash: w.hash,
       status: 'pending',
@@ -447,9 +464,10 @@ export async function runSync(params: SyncParams, io: SyncIO): Promise<SyncResul
 
   const current = await io.loadCanonical();
 
-  // Pre-write conflict detection: the grounded base must still be the remote.
+  // Pre-write conflict detection: the grounded base (ETag *and* content hash)
+  // must still be the remote.
   for (const role of ROLE_ORDER) {
-    if (current[role].etag !== params.base[role].etag) {
+    if (current[role].etag !== params.base[role].etag || current[role].hash !== params.base[role].hash) {
       return {
         status: 'conflict',
         role,
@@ -476,7 +494,16 @@ export async function runSync(params: SyncParams, io: SyncIO): Promise<SyncResul
     };
   }
 
-  return commitWrites(io, { bucket, uploadPrefix, user, current, writes, editStamp, snapshotPrefix }, plan.summary);
+  const result = await commitWrites(
+    io,
+    { bucket, uploadPrefix, user, current, writes, editStamp, snapshotPrefix },
+    plan.summary,
+  );
+  if (result.status === 'synced') {
+    const syncedMediaIds = [...plan.tagEdits, ...plan.timeEdits].map((e) => e.mediaId);
+    return { ...result, syncedMediaIds };
+  }
+  return result;
 }
 
 // --- Restore (P5) ----------------------------------------------------------
