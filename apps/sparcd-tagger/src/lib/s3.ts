@@ -7,6 +7,7 @@
 
 import { SafeS3Client, BucketNotAllowedError } from '@sparcd/s3-safe';
 import type { S3Config } from '@sparcd/types';
+import { parseUploadMeta, parseDeployments } from '@sparcd/camtrap';
 import { sha256Hex } from './hash';
 import type { CanonicalState, SyncIO, SnapshotManifest } from './sync';
 import type { SyncJournal, CanonicalRole } from './syncJournal';
@@ -111,6 +112,52 @@ export async function listUploads(cfg: S3Config, bucket: string, uuid: string): 
   return dirs
     .map((prefix) => ({ prefix, stamp: prefix.replace(/\/$/, '').split('/').pop() ?? prefix }))
     .sort((a, b) => b.stamp.localeCompare(a.stamp)); // newest stamp first
+}
+
+// A cheap per-upload summary for the Browse list: the canonical tally from
+// `UploadMeta.json` (image count + how many already carry a species) plus the
+// deployment location label(s) from `deployments.csv`. Two small GETs — no image
+// walk — so the list can render Date / Deployment / Images / Tagged per row.
+export type UploadSummary = {
+  imageCount: number;
+  imagesWithSpecies: number;
+  uploadUser: string;
+  description: string;
+  deployments: string[]; // location names, deduped; usually one
+};
+
+export async function loadUploadSummary(
+  cfg: S3Config,
+  bucket: string,
+  uploadPrefix: string,
+): Promise<UploadSummary> {
+  const client = getClient(cfg);
+  const decode = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+  let meta;
+  try {
+    meta = parseUploadMeta(decode(await client.getObject(bucket, `${uploadPrefix}${CANONICAL_FILE.uploadMeta}`)));
+  } catch (err) {
+    throw translateS3Error(err, 'UploadMeta.json');
+  }
+
+  // The location label is secondary — a missing or unreadable `deployments.csv`
+  // must not blank an otherwise-good row, so it degrades to no label.
+  let deployments: string[] = [];
+  try {
+    const rows = parseDeployments(decode(await client.getObject(bucket, `${uploadPrefix}deployments.csv`)));
+    deployments = [...new Set(rows.map((d) => d.locationName.trim()).filter(Boolean))];
+  } catch {
+    // No deployment label for this row.
+  }
+
+  return {
+    imageCount: meta.imageCount,
+    imagesWithSpecies: meta.imagesWithSpecies,
+    uploadUser: meta.uploadUser,
+    description: meta.description,
+    deployments,
+  };
 }
 
 export type UploadImage = {

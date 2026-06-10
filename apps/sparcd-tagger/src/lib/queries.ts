@@ -2,7 +2,7 @@
 // credentials), and the client cache is cleared on connect/disconnect, so
 // reconnecting with new credentials never serves a previous connection's data.
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueries } from '@tanstack/react-query';
 import type { S3Config } from '@sparcd/types';
 import {
   listCollections,
@@ -10,15 +10,23 @@ import {
   listUploadImages,
   listCollectionSnapshots,
   loadCanonicalState,
+  loadUploadSummary,
   parseCollectionKey,
   type CollectionRef,
   type UploadRef,
   type UploadImage,
   type UploadSnapshots,
+  type UploadSummary,
 } from './s3';
 import { fetchSpecies, type SpeciesResult } from './species';
 import { buildTagImages, type TagImage } from './workspace';
-import { groundUpload, getUpload, hasDirtyDraftsForUpload } from './db';
+import {
+  groundUpload,
+  getUpload,
+  hasDirtyDraftsForUpload,
+  uploadDraftStates,
+  type UploadDraftState,
+} from './db';
 
 export function useCollections(cfg: S3Config | null, connectionId: number) {
   return useQuery<CollectionRef[]>({
@@ -40,6 +48,45 @@ export function useUploads(cfg: S3Config | null, connectionId: number, collectio
     enabled: !!cfg && !!collectionKey,
     staleTime: 5 * 60 * 1000,
     retry: 1,
+  });
+}
+
+/**
+ * Per-upload Browse summaries (image tally + deployment label), one query per
+ * upload so each row carries its own loading/error state and they fetch in
+ * parallel. Returns the `UseQueryResult[]` aligned to `uploads` order; the caller
+ * reads `[i]` alongside `uploads[i]`. `UploadSummary` includes the type re-export
+ * so callers don't reach into `./s3`. */
+export type { UploadSummary, UploadDraftState };
+
+export function useUploadSummaries(
+  cfg: S3Config | null,
+  connectionId: number,
+  collectionKey: string | null,
+  uploads: UploadRef[] | undefined,
+) {
+  return useQueries({
+    queries: (uploads ?? []).map((u) => ({
+      queryKey: ['uploadSummary', connectionId, collectionKey, u.prefix],
+      queryFn: () => {
+        const { bucket } = parseCollectionKey(collectionKey!);
+        return loadUploadSummary(cfg!, bucket, u.prefix);
+      },
+      enabled: !!cfg && !!collectionKey,
+      staleTime: 60 * 1000,
+      retry: 1,
+    })),
+  });
+}
+
+/** Local edit state per upload (drives the Sync column). Cheap IndexedDB scan;
+ *  short stale time so returning from a tagging session refreshes the pills. */
+export function useUploadDraftStates(connectionId: number, collectionKey: string | null) {
+  return useQuery<Map<string, UploadDraftState>>({
+    queryKey: ['uploadDraftStates', connectionId, collectionKey],
+    queryFn: () => uploadDraftStates(parseCollectionKey(collectionKey!).bucket),
+    enabled: !!collectionKey,
+    staleTime: 5 * 1000,
   });
 }
 
