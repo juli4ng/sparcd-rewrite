@@ -183,32 +183,39 @@ function Row(p: RowProps) {
         </span>
       </button>
 
+      {/* Actions sit before the key badge so the badge stays anchored to the
+          right edge — the hover-only buttons reserve space even when hidden, so
+          ordering them last would shove the badge left and break alignment. */}
       <div className="flex items-center gap-1.5 shrink-0">
         {p.capturing ? (
           <span className="text-[11px] font-mono text-accent animate-pulse">press a key…</span>
-        ) : p.badge ? (
-          <kbd className="px-1.5 h-5 min-w-5 grid place-items-center border border-ink text-[11px] font-mono uppercase text-ink">
-            {p.badge}
-          </kbd>
-        ) : null}
-        {p.onStartCapture && !p.capturing && (
-          <button
-            onClick={p.onStartCapture}
-            className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] font-mono text-inkSoft hover:text-ink underline decoration-dotted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-            title="Assign a key to this species"
-          >
-            {p.badge ? 'rebind' : 'assign key'}
-          </button>
-        )}
-        {p.onClearKey && !p.capturing && (
-          <button
-            onClick={p.onClearKey}
-            className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] font-mono text-inkMute hover:text-warn"
-            title="Clear this key"
-            aria-label={`Clear key for ${p.common}`}
-          >
-            ✕
-          </button>
+        ) : (
+          <>
+            {p.onStartCapture && (
+              <button
+                onClick={p.onStartCapture}
+                className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] font-mono text-inkSoft hover:text-ink underline decoration-dotted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                title="Assign a key to this species"
+              >
+                {p.badge ? 'rebind' : 'assign key'}
+              </button>
+            )}
+            {p.onClearKey && (
+              <button
+                onClick={p.onClearKey}
+                className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] font-mono text-inkMute hover:text-warn"
+                title="Clear this key"
+                aria-label={`Clear key for ${p.common}`}
+              >
+                ✕
+              </button>
+            )}
+            {p.badge && (
+              <kbd className="px-1.5 h-5 min-w-5 grid place-items-center border border-ink text-[11px] font-mono uppercase text-ink">
+                {p.badge}
+              </kbd>
+            )}
+          </>
         )}
       </div>
     </div>
