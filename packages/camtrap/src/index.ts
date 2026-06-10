@@ -694,22 +694,52 @@ export const ZERO_OFFSET: TimeOffset = {
 // arithmetic and DST never shift the wall-clock value.
 const TS_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/;
 
+/** Last valid day of `month0` (0-11) in `year` — for Java-style day clamping. */
+function daysInMonth(year: number, month0: number): number {
+  return new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+}
+
 /**
  * Shift a naive ISO timestamp by a signed offset, returning the same
  * `YYYY-MM-DDTHH:mm:ss` shape. Non-matching input is returned unchanged.
+ *
+ * Mirrors the Java desktop app's `TimeShiftController`, which applies the offset
+ * as `LocalDateTime.plusYears(y).plusMonths(mo).plusDays(d).plusHours(h)...`.
+ * The year and month steps **clamp** the day-of-month to the last valid day
+ * (Jan 31 + 1mo → Feb 28/29) rather than overflowing into the next month, and
+ * the two clamps are **sequential** (plusYears clamps before plusMonths). The
+ * day/hour/minute/second steps are exact durations — a naive `LocalDateTime`
+ * has no DST, so a calendar day is always 24h. The corrected value is written to
+ * `media.csv` col 4 and read by Java / sparcd-web, so this must match Java
+ * exactly. See the `contracts.test.ts` "clamps month/year overflow" case.
  */
 export function shiftTimestamp(iso: string, off: TimeOffset): string {
   const m = TS_RE.exec(iso);
   if (!m) return iso;
+  let year = Number(m[1]);
+  let month0 = Number(m[2]) - 1;
+  let day = Number(m[3]);
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = Number(m[6]);
+
+  // plusYears — clamp the day within the same month of the new year.
+  year += off.years;
+  day = Math.min(day, daysInMonth(year, month0));
+  // plusMonths — carry into years, then clamp the day to the resulting month.
+  const totalMonths = month0 + off.months;
+  year += Math.floor(totalMonths / 12);
+  month0 = ((totalMonths % 12) + 12) % 12;
+  day = Math.min(day, daysInMonth(year, month0));
+
+  // plusDays/Hours/Minutes/Seconds — exact durations from the clamped instant.
   const d = new Date(
-    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])),
+    Date.UTC(year, month0, day, hour, minute, second) +
+      off.days * 86_400_000 +
+      off.hours * 3_600_000 +
+      off.minutes * 60_000 +
+      off.seconds * 1_000,
   );
-  d.setUTCFullYear(d.getUTCFullYear() + off.years);
-  d.setUTCMonth(d.getUTCMonth() + off.months);
-  d.setUTCDate(d.getUTCDate() + off.days);
-  d.setUTCHours(d.getUTCHours() + off.hours);
-  d.setUTCMinutes(d.getUTCMinutes() + off.minutes);
-  d.setUTCSeconds(d.getUTCSeconds() + off.seconds);
   return (
     `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}T` +
     `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`

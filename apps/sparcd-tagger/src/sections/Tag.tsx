@@ -3,12 +3,16 @@ import { useQuery } from '@tanstack/react-query';
 import { useStore } from '../store';
 import { useTagImages, useSpecies } from '../lib/queries';
 import { parseCollectionKey, presignImage } from '../lib/s3';
+import { correctedTimestamp, shiftTimestamp } from '@sparcd/camtrap';
 import { SpeciesPanel } from '../components/SpeciesPanel';
 import { Cheatsheet } from '../components/Cheatsheet';
 import { SyncDialog } from '../components/SyncDialog';
 import { SnapshotsDialog } from '../components/SnapshotsDialog';
+import { TimeShiftModal } from '../components/TimeShiftModal';
+import { PerImageTime } from '../components/PerImageTime';
 import { Overview, type PickMods, type ViewKind } from '../components/Overview';
 import { groupBursts, type BurstGrouping } from '../lib/bursts';
+import { offsetActive, formatOffsetDelta } from '../lib/timeshift';
 import { rangeSet, toggleIndex, burstIndexSet } from '../lib/selection';
 import { effectiveOf, type Effective } from '../lib/effective';
 import {
@@ -46,11 +50,14 @@ export function Tag() {
   const ctx = useMemo<UploadCtx>(() => ({ bucket, uploadPrefix: uploadPrefix ?? '' }), [bucket, uploadPrefix]);
 
   const drafts = useDraftStore((s) => s.drafts);
+  const timeOffset = useDraftStore((s) => s.timeOffset);
   const loadUpload = useDraftStore((s) => s.loadUpload);
   const applyTagFn = useDraftStore((s) => s.applyTag);
   const applyTagManyFn = useDraftStore((s) => s.applyTagMany);
   const detagManyFn = useDraftStore((s) => s.detagMany);
   const setQuestionableManyFn = useDraftStore((s) => s.setQuestionableMany);
+  const setTimeOffsetFn = useDraftStore((s) => s.setTimeOffset);
+  const setTimeOverrideFn = useDraftStore((s) => s.setTimeOverride);
   const flushSaves = useDraftStore((s) => s.flushSaves);
   const discardUpload = useDraftStore((s) => s.discardUpload);
 
@@ -71,18 +78,35 @@ export function Tag() {
   const [showCheatsheet, setShowCheatsheet] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
+  const [showTimeShift, setShowTimeShift] = useState(false);
   const [savedAt, setSavedAt] = useState(0);
   const filterRef = useRef<HTMLInputElement>(null);
 
   const list = images.data ?? [];
   const current = list[focus];
 
-  // Burst grouping (visual bands + whole-burst selection / nav). Recomputed when
-  // the image list or the per-session threshold changes.
-  const grouping = useMemo<BurstGrouping>(
-    () => groupBursts(list, burstThreshold, burstGroupingEnabled),
-    [list, burstThreshold, burstGroupingEnabled],
+  // An upload offset shifts every image equally, so it never changes a burst
+  // gap — only the band labels. Feed the offset-corrected time so bands read the
+  // corrected span; per-image overrides are rare and intentionally don't re-band
+  // (keeps grouping off the per-keystroke draft path). Undefined → base time.
+  const tsOf = useMemo(
+    () =>
+      offsetActive(timeOffset)
+        ? (img: TagImage) => shiftTimestamp(img.baseTimestamp, timeOffset!)
+        : undefined,
+    [timeOffset],
   );
+
+  // Burst grouping (visual bands + whole-burst selection / nav). Recomputed when
+  // the image list, the per-session threshold, or the upload offset changes.
+  const grouping = useMemo<BurstGrouping>(
+    () => groupBursts(list, burstThreshold, burstGroupingEnabled, tsOf),
+    [list, burstThreshold, burstGroupingEnabled, tsOf],
+  );
+
+  const sampleTimestamp = useMemo(() => list.find((i) => i.baseTimestamp)?.baseTimestamp ?? '', [
+    list,
+  ]);
 
   // Reset focus/selection when the upload changes / data arrives.
   useEffect(() => {
@@ -239,6 +263,10 @@ export function Tag() {
   const draft = current ? drafts[current.key] : undefined;
   const eff = current ? effectiveOf(current, draft) : null;
   const nDirty = dirtyCount(drafts);
+  const hasUploadShift = offsetActive(timeOffset);
+  const correctedTs = current
+    ? correctedTimestamp(current.baseTimestamp, timeOffset, draft?.timeOverride ?? null)
+    : '';
 
   return (
     <div className="h-full flex flex-col min-h-0">
@@ -272,6 +300,24 @@ export function Tag() {
             </>
           )}
         </span>
+
+        {/* Upload time-shift entry + persistent active-offset indicator (§08). */}
+        <button
+          onClick={() => setShowTimeShift(true)}
+          className={`inline-flex items-center gap-1.5 text-[11.5px] font-mono px-2 py-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+            hasUploadShift
+              ? 'bg-mark border border-ink text-ink font-[600]'
+              : 'border border-rule text-inkSoft hover:text-ink hover:border-ink'
+          }`}
+          title={
+            hasUploadShift
+              ? 'Upload time shift is active — click to edit'
+              : 'Shift every frame in this upload by a signed offset'
+          }
+        >
+          <span aria-hidden>◷</span>
+          {hasUploadShift ? `clock ${formatOffsetDelta(timeOffset)}` : 'Time shift'}
+        </button>
 
         <div className="ml-auto flex items-center gap-3">
           {savedAt > 0 && <span className="text-[12px] font-mono text-accent">saved ✓</span>}
@@ -333,6 +379,15 @@ export function Tag() {
               current={current}
               eff={eff}
               savedAt={savedAt}
+              corrected={correctedTs}
+              hasUploadShift={hasUploadShift}
+              overridden={!!draft?.timeOverride}
+              onSetTime={(iso) =>
+                current && setTimeOverrideFn(ctx, current.key, current.deploymentId, iso)
+              }
+              onClearTime={() =>
+                current && setTimeOverrideFn(ctx, current.key, current.deploymentId, null)
+              }
               onDetag={() => detagManyFn(ctx, targetsOf())}
             />
             <SpeciesPanel {...speciesPanelProps()} />
@@ -345,6 +400,15 @@ export function Tag() {
         <SyncDialog ctx={ctx} images={list} drafts={drafts} onClose={() => setShowSync(false)} />
       )}
       {showSnapshots && <SnapshotsDialog ctx={ctx} onClose={() => setShowSnapshots(false)} />}
+      {showTimeShift && (
+        <TimeShiftModal
+          offset={timeOffset}
+          sampleTimestamp={sampleTimestamp}
+          totalFrames={list.length}
+          onApply={(o) => setTimeOffsetFn(ctx, o)}
+          onClose={() => setShowTimeShift(false)}
+        />
+      )}
     </div>
   );
 
@@ -374,11 +438,21 @@ function FocusPane({
   current,
   eff,
   savedAt,
+  corrected,
+  hasUploadShift,
+  overridden,
+  onSetTime,
+  onClearTime,
   onDetag,
 }: {
   current: TagImage | undefined;
   eff: Effective | null;
   savedAt: number;
+  corrected: string;
+  hasUploadShift: boolean;
+  overridden: boolean;
+  onSetTime: (iso: string) => void;
+  onClearTime: () => void;
   onDetag: () => void;
 }) {
   return (
@@ -390,10 +464,17 @@ function FocusPane({
         <div className="shrink-0 border-t border-rule bg-panel px-5 py-3 flex items-center gap-5 flex-wrap">
           <div className="min-w-0">
             <div className="text-[14px] font-mono text-ink truncate" title={current.fileName}>
-              {current.fileName}
+              {current.fileName} <span className="text-inkMute">· {shortDeployment(current.deploymentId)}</span>
             </div>
-            <div className="text-[12px] font-mono text-inkMute">
-              {current.baseTimestamp || '— no timestamp —'} · {shortDeployment(current.deploymentId)}
+            <div className="mt-1">
+              <PerImageTime
+                original={current.baseTimestamp}
+                corrected={corrected}
+                hasUploadShift={hasUploadShift}
+                overridden={overridden}
+                onSet={onSetTime}
+                onClear={onClearTime}
+              />
             </div>
           </div>
           <div className="ml-auto flex items-center gap-3">

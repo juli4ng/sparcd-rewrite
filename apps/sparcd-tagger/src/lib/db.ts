@@ -182,6 +182,27 @@ export function getUpload(bucket: string, uploadPrefix: string): Promise<UploadR
   return db.uploads.get(uploadId(bucket, uploadPrefix));
 }
 
+/**
+ * Set (or clear) the upload-level time offset, upserting the `uploads` record so
+ * an offset can be set before the workspace has grounded. Only `timeOffset` is
+ * touched — the grounding ETags/hashes are preserved — mirroring how
+ * `groundUpload` preserves an existing `timeOffset`. The sync path reads this
+ * value back via `getUpload`, so persisting it here is what makes an upload-level
+ * correction show up in the next sync's `media.csv` col-4 writes.
+ */
+export async function setUploadTimeOffset(
+  bucket: string,
+  uploadPrefix: string,
+  offset: TimeOffsetRecord | null,
+): Promise<void> {
+  const id = uploadId(bucket, uploadPrefix);
+  const existing = await db.uploads.get(id);
+  await db.uploads.put({
+    ...(existing ?? { id, bucket, uploadPrefix, loadedAt: new Date().toISOString() }),
+    timeOffset: offset,
+  });
+}
+
 export function loadSyncJournal(
   bucket: string,
   uploadPrefix: string,

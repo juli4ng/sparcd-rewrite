@@ -47,6 +47,11 @@ export function groupBursts(
   images: TagImage[],
   thresholdSec: number,
   enabled = true,
+  // Timestamp accessor — defaults to the canonical capture time. The Tag
+  // workspace passes the *corrected* time (upload offset + per-image override)
+  // so a per-image correction can move an image across a burst boundary. A
+  // uniform upload offset shifts every image equally and never changes a gap.
+  tsOf: (img: TagImage) => string = (img) => img.baseTimestamp,
 ): BurstGrouping {
   // Grouping off (the default — our cameras shoot no bursts): collapse the whole
   // upload into one flat group so whole-burst select / nav helpers stay valid,
@@ -60,8 +65,8 @@ export function groupBursts(
             end: images.length - 1,
             size: images.length,
             deploymentId: images[0].deploymentId,
-            startTs: images[0].baseTimestamp,
-            endTs: images[images.length - 1].baseTimestamp,
+            startTs: tsOf(images[0]),
+            endTs: tsOf(images[images.length - 1]),
           },
         ]
       : [];
@@ -76,7 +81,7 @@ export function groupBursts(
 
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
-    const ts = epoch(img.baseTimestamp);
+    const ts = epoch(tsOf(img));
     const sameDeployment = cur !== null && cur.deploymentId === img.deploymentId;
     // A missing timestamp can't be proven within the window, so it always breaks
     // the run — an unknown gap is treated as "not the same burst".
@@ -86,7 +91,7 @@ export function groupBursts(
     if (cur && withinWindow) {
       cur.end = i;
       cur.size++;
-      cur.endTs = img.baseTimestamp;
+      cur.endTs = tsOf(img);
     } else {
       cur = {
         id: bursts.length,
@@ -94,8 +99,8 @@ export function groupBursts(
         end: i,
         size: 1,
         deploymentId: img.deploymentId,
-        startTs: img.baseTimestamp,
-        endTs: img.baseTimestamp,
+        startTs: tsOf(img),
+        endTs: tsOf(img),
       };
       bursts.push(cur);
     }

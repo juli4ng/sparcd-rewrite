@@ -83,6 +83,24 @@ describe('groupBursts', () => {
     expect(groupBursts([], 60)).toEqual({ bursts: [], burstOf: [], banded: true });
   });
 
+  it('uses the tsOf accessor for band spans and gap math (corrected times)', () => {
+    const images = [
+      img('a', 'loc-a', '2024-01-01T08:00:00'),
+      img('b', 'loc-a', '2024-01-01T08:00:30'),
+    ];
+    // A per-image correction pushes 'b' well outside the 60s window, so the
+    // accessor-driven gap splits a burst the base timestamps would have joined.
+    const corrected: Record<string, string> = {
+      a: '2024-01-01T08:00:00',
+      b: '2024-01-01T09:00:30',
+    };
+    const { bursts, burstOf } = groupBursts(images, 60, true, (i) => corrected[i.key]);
+    expect(bursts).toHaveLength(2);
+    expect(burstOf).toEqual([0, 1]);
+    // Band labels reflect the corrected times, not the base.
+    expect(bursts[1].startTs).toBe('2024-01-01T09:00:30');
+  });
+
   it('collapses everything into one unbanded group when disabled', () => {
     const { bursts, burstOf, banded } = groupBursts(
       [

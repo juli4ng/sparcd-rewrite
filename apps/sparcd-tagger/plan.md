@@ -1421,6 +1421,67 @@ helper, per the repo style note).
   to run against a live write-allowed test bucket is: browse → tag → sync (dry
   then live) → confirm snapshot appears in History → restore it.
 
+### Time correction UI — implementation report (done)
+
+Status: **complete — design §08 built; the standing "time-correction UI unbuilt"
+deferral carried through P1–P6 is closed.** `pnpm check` (5 workspaces), `pnpm
+test` (camtrap **40** + s3-safe 5 + uploader 36 + tagger **57**), and `pnpm
+--filter sparcd-tagger build` all pass. Built test-first against the upstream
+Java app, per the no-regression workflow.
+
+**Data-correctness fix first — `@sparcd/camtrap.shiftTimestamp` now matches Java.**
+Reviewed `Sanimal FX/.../controller/importView/TimeShiftController.java`: the
+offset is applied as `LocalDateTime.plusYears(y).plusMonths(mo).plusDays(d)
+.plusHours(h).plusMinutes(m).plusSeconds(s)`, where `plusYears`/`plusMonths`
+**clamp** the day-of-month to the last valid day (Jan 31 +1mo → Feb 28/29) and
+the two clamps are **sequential**. The old `shiftTimestamp` used JS
+`Date.setUTCMonth`, which **overflows** (Jan 31 +1mo → Mar 2/3) — and a test was
+*asserting* the overflow value as intended. Since the corrected time is written to
+`media.csv` col 4 and read by Java/sparcd-web, Java is the contract. Rewrote the
+helper to mirror Java's sequential clamping (exact-duration day/h/m/s after the
+clamp) and rewrote the `contracts.test.ts` boundary cases to encode Java's
+semantics (leap clamp, non-leap clamp, leap-day +1y, the order-dependent
++1y+1mo case, negative wrap). Safe to change now: no time-correction UI had
+shipped, so no offset had ever been written.
+
+**UI (all on the now-verified data path; no new contract surface).**
+- `lib/timeshift.ts` (pure, tested): `offsetActive`, `formatOffsetDelta`
+  (`+1h` / `-1d +7h -30m` / `no shift`), `normalizeTimestampInput` (accepts
+  space-or-`T`, optional seconds, range-validates → canonical naive ISO or null).
+- `TimeShiftModal` (upload-level): signed y/mo/d/h/m/s spinners + live
+  original→corrected preview using `shiftTimestamp`. Writes
+  `uploads.timeOffset` via the new draft-store `setTimeOffset` →
+  `db.setUploadTimeOffset` upsert.
+- `PerImageTime` (Focus): corrected prominent + original struck-through +
+  `shifted`/`image override` badge + inline "Adjust time" editor + clear-override,
+  writing `drafts.timeOverride` via `setTimeOverride` (marks the draft dirty).
+- Tag toolbar: a `◷ Time shift` entry that becomes a filled `◷ clock <delta>`
+  active-offset indicator when an offset is set (the design's ClockChip role).
+- Display: the focused image shows its corrected time; burst grouping takes an
+  optional `tsOf` accessor so band spans read corrected times (a uniform offset
+  never changes a gap, so grouping itself is stable; kept off the per-keystroke
+  draft path).
+
+**Double-apply guard (the one real data risk in the feature).** The upload
+offset is *relative* (`base + offset`); after a successful live sync bakes the
+corrected times into `media.csv`, re-grounding makes the new base the corrected
+value — so a standing offset would shift *again* next sync. `performSync` now
+clears `uploads.timeOffset` on a successful live sync (and `SyncDialog` resets the
+in-memory value so the indicator clears). Per-image overrides are *absolute*, so
+they are idempotent and need no reset.
+
+**Tests.** `test/timeshift.test.ts` (7: format/active/normalize) and a `tsOf`
+case in `test/bursts.test.ts`. The offset-clearing in `performSync` is Dexie glue
+(verified by `check`/`build` + the live checklist, consistent with P1–P6 norms);
+the correctness-critical date math and the time-only sync path are unit-tested in
+`@sparcd/camtrap` + `test/sync.test.ts`.
+
+**Still unverified (carried):** live CORS / `species.json` / `IfMatch`
+enforcement — plus, now, a live check that an upload shift + a per-image override
+round-trip into `media.csv` col 4 and read back correctly in the Java app /
+sparcd-web. Multi-species per frame remains deliberately deferred (single label
+per image); the `@sparcd/camtrap` merge layer already supports N rows/image.
+
 ## Open questions for before P0
 
 1. **User identity for snapshots and edit comments.** The IAM access key

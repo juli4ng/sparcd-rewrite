@@ -8,7 +8,17 @@
 // editing one image never re-renders the whole strip.
 
 import { create } from 'zustand';
-import { db, draftId, loadDraftsForUpload, discardUploadDrafts, uploadId, type DraftRecord } from './db';
+import {
+  db,
+  draftId,
+  loadDraftsForUpload,
+  discardUploadDrafts,
+  uploadId,
+  getUpload,
+  setUploadTimeOffset,
+  type DraftRecord,
+  type TimeOffsetRecord,
+} from './db';
 
 /** The built-in non-animal label. Encoded as a species row (`Casper`, count ≥1)
  *  so it counts as species-present exactly like Java treats it (P0 decision). */
@@ -38,11 +48,24 @@ type DraftState = {
   loadedKey: string | null; // `${bucket}::${uploadPrefix}` currently hydrated
   loading: boolean;
   drafts: Record<string, DraftRecord>; // by mediaPath
+  timeOffset: TimeOffsetRecord | null; // upload-level signed Δ for the loaded upload
 
   loadUpload: (ctx: UploadCtx) => Promise<void>;
   applyTag: (ctx: UploadCtx, mediaPath: string, deploymentId: string, tag: AppliedTag) => void;
   detag: (ctx: UploadCtx, mediaPath: string, deploymentId: string) => void;
   toggleQuestionable: (ctx: UploadCtx, mediaPath: string, deploymentId: string) => void;
+
+  /** Set (or clear with null) the upload-level offset applied to every image.
+   *  Persists to the `uploads` record so the next sync writes corrected times. */
+  setTimeOffset: (ctx: UploadCtx, offset: TimeOffsetRecord | null) => void;
+  /** Set (or clear with null) one image's per-image corrected timestamp, on top
+   *  of the upload offset. Marks the draft dirty so it syncs and surfaces. */
+  setTimeOverride: (
+    ctx: UploadCtx,
+    mediaPath: string,
+    deploymentId: string,
+    iso: string | null,
+  ) => void;
 
   // Batch variants for whole-burst / multi-select: one state update + one Dexie
   // write per target, so applying to a 2,000-image burst is a single re-render
@@ -144,20 +167,24 @@ export const useDraftStore = create<DraftState>((set, get) => {
     loadedKey: null,
     loading: false,
     drafts: {},
+    timeOffset: null,
 
     loadUpload: async (ctx) => {
       const key = uploadId(ctx.bucket, ctx.uploadPrefix);
       if (get().loadedKey === key) return;
-      set({ loading: true, loadedKey: key, drafts: {} });
-      const rows = await loadDraftsForUpload(ctx.bucket, ctx.uploadPrefix);
+      set({ loading: true, loadedKey: key, drafts: {}, timeOffset: null });
+      const [rows, upload] = await Promise.all([
+        loadDraftsForUpload(ctx.bucket, ctx.uploadPrefix),
+        getUpload(ctx.bucket, ctx.uploadPrefix),
+      ]);
       // Ignore a result that arrived after the user switched uploads.
       if (get().loadedKey !== key) return;
       const map: Record<string, DraftRecord> = {};
       for (const r of rows) map[r.mediaPath] = r;
-      // The `uploads` record (loadedAt + base ETags/hashes) is owned by the
-      // workspace grounding step (`groundUpload`), so the base and the on-screen
-      // data are written together; the draft store no longer touches it.
-      set({ loading: false, drafts: map });
+      // The `uploads` record's base ETags/hashes are owned by the workspace
+      // grounding step (`groundUpload`); the store only reads back the
+      // upload-level `timeOffset` it persists via `setTimeOffset`.
+      set({ loading: false, drafts: map, timeOffset: upload?.timeOffset ?? null });
     },
 
     applyTag: (ctx, mediaPath, deploymentId, tag) =>
@@ -175,6 +202,17 @@ export const useDraftStore = create<DraftState>((set, get) => {
       const prev = get().drafts[mediaPath];
       mutate(ctx, mediaPath, deploymentId, { questionable: !prev?.questionable });
     },
+
+    setTimeOffset: (ctx, offset) => {
+      // Optimistic Zustand update (hot path) + durable Dexie mirror. Unlike a
+      // draft, the offset lives on the `uploads` record, so it never shows in
+      // `dirtyCount` — the active-offset indicator (ClockChip) is its signal.
+      set({ timeOffset: offset });
+      void setUploadTimeOffset(ctx.bucket, ctx.uploadPrefix, offset);
+    },
+
+    setTimeOverride: (ctx, mediaPath, deploymentId, iso) =>
+      mutate(ctx, mediaPath, deploymentId, { timeOverride: iso }),
 
     applyTagMany: (ctx, targets, tag) => mutateMany(ctx, targets, tagPatch(tag)),
 

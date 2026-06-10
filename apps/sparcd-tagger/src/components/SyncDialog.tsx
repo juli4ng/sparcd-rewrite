@@ -33,6 +33,7 @@ export function SyncDialog({
   const setSyncState = useStore((s) => s.setSyncState);
   const connectionId = useStore((s) => s.connectionId);
   const markUploadSynced = useDraftStore((s) => s.markUploadSynced);
+  const setTimeOffset = useDraftStore((s) => s.setTimeOffset);
   const discardUpload = useDraftStore((s) => s.discardUpload);
   const queryClient = useQueryClient();
 
@@ -85,6 +86,9 @@ export function SyncDialog({
         // Clear dirty only on the drafts actually written — questionable-only
         // drafts (no canonical target) stay surfaced as unsaved.
         await markUploadSynced(ctx, r.syncedMediaIds ?? []);
+        // The offset was baked into media.csv (performSync cleared it in Dexie);
+        // reset the in-memory value too so the active-offset indicator clears.
+        setTimeOffset(ctx, null);
         await queryClient.invalidateQueries({ queryKey: ['tagImages', connectionId] });
       }
     } catch (e) {

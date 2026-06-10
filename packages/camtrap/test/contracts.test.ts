@@ -119,13 +119,44 @@ describe('time correction', () => {
     );
   });
 
-  it('rolls month and year boundaries correctly', () => {
+  it('rolls second/day boundaries with exact-duration arithmetic', () => {
     expect(shiftTimestamp('2024-12-31T23:59:59', { ...ZERO_OFFSET, seconds: 1 })).toBe(
       '2025-01-01T00:00:00',
     );
+  });
+
+  // Month/year shifts must match the Java desktop app's TimeShiftController,
+  // which uses LocalDateTime.plusYears(...).plusMonths(...) — each step CLAMPS
+  // the day-of-month to the last valid day instead of overflowing into the next
+  // month. The corrected timestamp is written to media.csv col 4 and read by the
+  // Java app and sparcd-web, so this is a hard compatibility contract, not a
+  // stylistic choice.
+  it('clamps month/year overflow to the last valid day, matching Java LocalDateTime', () => {
+    // Jan 31 + 1 month → Feb 29 (2024 leap), NOT Mar 2. Java: clamps to last Feb day.
     expect(shiftTimestamp('2024-01-31T00:00:00', { ...ZERO_OFFSET, months: 1 })).toBe(
-      '2024-03-02T00:00:00', // JS month arithmetic, documented behavior
+      '2024-02-29T00:00:00',
     );
+    // Same shift in a non-leap year clamps to Feb 28.
+    expect(shiftTimestamp('2023-01-31T00:00:00', { ...ZERO_OFFSET, months: 1 })).toBe(
+      '2023-02-28T00:00:00',
+    );
+    // Leap day + 1 year → Feb 28 the next (non-leap) year.
+    expect(shiftTimestamp('2024-02-29T12:00:00', { ...ZERO_OFFSET, years: 1 })).toBe(
+      '2025-02-28T12:00:00',
+    );
+    // Order matters: plusYears clamps 29→28 first, then plusMonths carries that
+    // 28 forward (→ Mar 28), NOT Mar 29. Proves the two clamps are sequential.
+    expect(shiftTimestamp('2024-02-29T00:00:00', { ...ZERO_OFFSET, years: 1, months: 1 })).toBe(
+      '2025-03-28T00:00:00',
+    );
+    // Negative month wraps the year correctly.
+    expect(shiftTimestamp('2024-01-15T08:30:00', { ...ZERO_OFFSET, months: -1 })).toBe(
+      '2023-12-15T08:30:00',
+    );
+    // Day/hour/minute/second offsets are exact durations applied after the clamp.
+    expect(
+      shiftTimestamp('2024-01-31T22:00:00', { ...ZERO_OFFSET, months: 1, days: 1, hours: 3 }),
+    ).toBe('2024-03-02T01:00:00'); // Feb 29 (clamp) + 1d3h
   });
 
   it('per-image override wins over the upload offset', () => {

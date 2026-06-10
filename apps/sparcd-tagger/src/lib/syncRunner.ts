@@ -10,6 +10,7 @@ import { makeSyncIO, loadCanonicalState, loadSnapshotBodies } from './s3';
 import {
   getUpload,
   groundUpload,
+  setUploadTimeOffset,
   loadSyncJournal,
   saveSyncJournal,
   clearSyncJournal,
@@ -72,6 +73,12 @@ export async function performSync(args: SyncArgs): Promise<SyncResult> {
   if (result.status === 'synced' && !dryRun) {
     const fresh = await loadCanonicalState(cfg, bucket, uploadPrefix);
     await groundUpload(bucket, uploadPrefix, fresh);
+    // A successful live sync bakes the upload offset into canonical `media.csv`
+    // (every shifted image's col 4 was rewritten). The new base IS the corrected
+    // time, so the standing offset must be cleared — leaving it would re-apply it
+    // on top of already-corrected timestamps at the next sync (double shift). The
+    // offset is relative; per-image overrides are absolute, so they need no reset.
+    await setUploadTimeOffset(bucket, uploadPrefix, null);
   }
   return result;
 }
