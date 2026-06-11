@@ -6,6 +6,7 @@ on:
     paths:
       - "apps/sparcd-explorer/**"
       - "apps/sparcd-uploader/**"
+      - "apps/sparcd-tagger/**"
       - "packages/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/pages.yml"
@@ -65,14 +66,18 @@ jobs:
       - name: Build uploader
         run: pnpm --filter sparcd-uploader build
 
+      - name: Build tagger
+        run: pnpm --filter sparcd-tagger build
+
       # --- Assemble combined site ---
       - name: Assemble site
         run: |
           set -euo pipefail
           rm -rf _site
-          mkdir -p _site/uploader
+          mkdir -p _site/uploader _site/tagger
           cp -r apps/sparcd-explorer/dist/. _site/
           cp -r apps/sparcd-uploader/dist/. _site/uploader/
+          cp -r apps/sparcd-tagger/dist/. _site/tagger/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
