@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { useLocations } from '../lib/useLocations';
 import { useCollections, useCollectionDeployments } from '../lib/useCollections';
 import { DeploymentPicker } from '../components/DeploymentPicker';
+import { CollectionPicker } from '../components/CollectionPicker';
 import { MetadataPreview } from '../components/MetadataPreview';
 import { CaptureTimeEditor } from '../components/CaptureTimeEditor';
 import { sanitizeUploaderUser } from '../lib/normalize';
@@ -107,18 +108,11 @@ export function Assign() {
               />
             ) : (
               <>
-                <select
-                  value={selectedBucket ?? ''}
-                  onChange={(e) => setSelectedBucket(e.target.value || null)}
-                  className="w-full border border-rule bg-paper px-3 py-2 font-body text-[14px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"
-                >
-                  {collections.data.map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.name ?? '(unnamed)'}
-                      {c.organization ? ` · ${c.organization}` : ''} — {c.bucket}
-                    </option>
-                  ))}
-                </select>
+                <CollectionPicker
+                  collections={collections.data}
+                  value={selectedBucket}
+                  onChange={(key) => setSelectedBucket(key)}
+                />
                 <p className="font-body text-[12px] text-inkMute">
                   {collection?.name ? (
                     <>
