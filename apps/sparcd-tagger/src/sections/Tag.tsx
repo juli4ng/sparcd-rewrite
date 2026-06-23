@@ -21,6 +21,7 @@ import { offsetActive, formatOffsetDelta } from '../lib/timeshift';
 import { rangeSet, toggleIndex, burstIndexSet } from '../lib/selection';
 import { effectiveOf, type Effective } from '../lib/effective';
 import { sortIndices, type SortField, type SortDir } from '../lib/sortImages';
+import { findFilenameMatches } from '../lib/imageSearch';
 import {
   useDraftStore,
   dirtyCount,
@@ -113,6 +114,32 @@ export function Tag() {
     }
   };
 
+  // Find-image-by-name: jump keyboard focus to a filename match. Independent of
+  // the species filter (a separate concern in SpeciesPanel). Jump-only — never
+  // filters `list`, which would renumber the positional burst/selection indices.
+  const [imgQuery, setImgQuery] = useState('');
+  const [matchPos, setMatchPos] = useState(0);
+  const imgSearchRef = useRef<HTMLInputElement>(null);
+  const matches = useMemo(() => findFilenameMatches(list, imgQuery), [list, imgQuery]);
+
+  const jumpToMatch = (pos: number) => {
+    if (!matches.length) return;
+    const wrapped = ((pos % matches.length) + matches.length) % matches.length;
+    setMatchPos(wrapped);
+    const idx = matches[wrapped];
+    setFocus(idx);
+    setAnchor(idx);
+    setSelected(new Set());
+  };
+
+  // Auto-jump to the first match as the query changes (jump-as-you-type).
+  useEffect(() => {
+    if (matches.length) jumpToMatch(0);
+    else setMatchPos(0);
+    // jumpToMatch reads `matches`; depend on the query+matches, not the closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imgQuery, matches]);
+
   // An upload offset shifts every image equally, so it never changes a burst
   // gap — only the band labels. Feed the offset-corrected time so bands read the
   // corrected span; per-image overrides are rare and intentionally don't re-band
@@ -144,6 +171,8 @@ export function Tag() {
     setFocus(0);
     setAnchor(0);
     setSelected(new Set());
+    setImgQuery('');
+    setMatchPos(0);
     prevOrderRef.current = null;
   }, [uploadPrefix, images.data]);
 
@@ -365,6 +394,69 @@ export function Tag() {
           <span aria-hidden>◷</span>
           {hasUploadShift ? `clock ${formatOffsetDelta(timeOffset)}` : 'Time shift'}
         </button>
+
+        {/* Find image by filename — jumps focus to a match (the virtualizer then
+            scrolls it into view). Separate from the species filter. */}
+        <div className="inline-flex items-center gap-1 border border-rule px-1.5 py-0.5">
+          <span aria-hidden className="text-[12px] text-inkMute">
+            ⌕
+          </span>
+          <input
+            ref={imgSearchRef}
+            value={imgQuery}
+            onChange={(e) => setImgQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                jumpToMatch(matchPos + (e.shiftKey ? -1 : 1));
+              } else if (e.key === 'Escape') {
+                setImgQuery('');
+                imgSearchRef.current?.blur();
+              }
+            }}
+            placeholder="Find image…"
+            className="w-28 bg-transparent text-[12px] font-mono text-ink placeholder:text-inkMute focus:outline-none"
+            title="Find image by filename (Enter / Shift+Enter to cycle, / to focus)"
+          />
+          {imgQuery.trim() && (
+            <>
+              <span
+                className={`text-[11px] font-mono ${matches.length ? 'text-accent' : 'text-warn'}`}
+              >
+                {matches.length ? matchPos + 1 : 0}/{matches.length}
+              </span>
+              <button
+                onClick={() => jumpToMatch(matchPos - 1)}
+                disabled={!matches.length}
+                className="text-[12px] text-inkSoft hover:text-ink disabled:opacity-40 px-0.5"
+                title="Previous match"
+                aria-label="Previous match"
+              >
+                ‹
+              </button>
+              <button
+                onClick={() => jumpToMatch(matchPos + 1)}
+                disabled={!matches.length}
+                className="text-[12px] text-inkSoft hover:text-ink disabled:opacity-40 px-0.5"
+                title="Next match"
+                aria-label="Next match"
+              >
+                ›
+              </button>
+              <button
+                onClick={() => {
+                  setImgQuery('');
+                  imgSearchRef.current?.focus();
+                }}
+                className="text-[12px] text-inkMute hover:text-ink px-0.5"
+                title="Clear"
+                aria-label="Clear image search"
+              >
+                ✕
+              </button>
+            </>
+          )}
+        </div>
 
         <div className="ml-auto flex items-center gap-3">
           {savedAt > 0 && <span className="text-[12px] font-mono text-accent">saved ✓</span>}
@@ -998,20 +1090,27 @@ function handleKey(e: KeyboardEvent, s: HandlerState): void {
 
   const typing = isTypingTarget(e.target);
 
-  // Escape blurs the filter. Enter applies the first filter match to the targets.
+  // Any focused text input suppresses the tagger hotkeys. The Escape/Enter
+  // species-filter behavior is scoped to the species filter input ONLY — other
+  // inputs (e.g. the find-image-by-name box) own their own keys, so Enter there
+  // never applies a species tag.
   if (typing) {
-    if (e.key === 'Escape') s.filterRef.current?.blur();
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const q = s.filter.trim().toLowerCase();
-      const match =
-        q &&
-        s.speciesList.find(
-          (sp) =>
-            sp.commonName.toLowerCase().includes(q) || sp.scientificName.toLowerCase().includes(q),
-        );
-      if (match) s.apply({ scientificName: match.scientificName, commonName: match.commonName, count: 1 });
-      s.filterRef.current?.blur();
+    if (e.target === s.filterRef.current) {
+      if (e.key === 'Escape') s.filterRef.current?.blur();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const q = s.filter.trim().toLowerCase();
+        const match =
+          q &&
+          s.speciesList.find(
+            (sp) =>
+              sp.commonName.toLowerCase().includes(q) ||
+              sp.scientificName.toLowerCase().includes(q),
+          );
+        if (match)
+          s.apply({ scientificName: match.scientificName, commonName: match.commonName, count: 1 });
+        s.filterRef.current?.blur();
+      }
     }
     return;
   }
