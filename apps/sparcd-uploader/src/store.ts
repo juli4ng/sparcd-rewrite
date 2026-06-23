@@ -18,6 +18,7 @@ export type FileEntry = ScannedFile & {
   processState: ProcessState;
   sha256?: string;
   exifNaive?: NaiveDateTime; // naive wall-clock components, no zone
+  manualNaive?: NaiveDateTime; // user-entered wall-clock for files with no EXIF/container time
   exifCamera?: string;
   gps?: { lat: number; lon: number };
   width?: number;
@@ -62,6 +63,7 @@ type UploaderState = {
   applyResult: (result: ProcessResponse) => void;
   setThumbnail: (id: string, thumbnail: Blob) => void;
   removeFile: (id: string) => void;
+  setManualNaive: (id: string, naive: NaiveDateTime | null) => void;
   resetBatch: () => void;
   setUploaderUser: (value: string) => void;
   setSelectedLocationKey: (key: string | null) => void;
@@ -190,6 +192,17 @@ export const useStore = create<UploaderState>()(
       removeFile: (id) =>
         set((s) => {
           const files = s.files.filter((f) => f.id !== id);
+          return { files, validations: validateBatch(files) };
+        }),
+
+      // Manual capture time for a file with no EXIF/container time. Stored as raw
+      // naive components (like exifNaive) so it's interpreted in the upload zone
+      // at bundle build; null clears it and re-surfaces the file as unset.
+      setManualNaive: (id, naive) =>
+        set((s) => {
+          const files = s.files.map((f) =>
+            f.id === id ? { ...f, manualNaive: naive ?? undefined } : f,
+          );
           return { files, validations: validateBatch(files) };
         }),
 

@@ -4,8 +4,10 @@ import { useLocations } from '../lib/useLocations';
 import { useCollections, useCollectionDeployments } from '../lib/useCollections';
 import { DeploymentPicker } from '../components/DeploymentPicker';
 import { MetadataPreview } from '../components/MetadataPreview';
+import { CaptureTimeEditor } from '../components/CaptureTimeEditor';
 import { sanitizeUploaderUser } from '../lib/normalize';
 import { supportedTimeZones } from '../lib/exifTime';
+import { captureTimeComplete } from '../lib/validation';
 
 const sectionLabel =
   'font-[600] text-[11px] tracking-[0.16em] uppercase text-inkSoft mb-2';
@@ -73,7 +75,11 @@ export function Assign() {
   }, [collectionLocations, deployments.data, selectedLocationKey, setSelectedLocationKey]);
 
   const location = collectionLocations.find((l) => l.key === selectedLocationKey) ?? null;
-  const canContinue = !!selectedLocationKey && !!slug && !!collection;
+  const needsCaptureTime = files.some(
+    (f) => f.processState === 'ready' && !f.exifNaive,
+  );
+  const captureComplete = captureTimeComplete(files);
+  const canContinue = !!selectedLocationKey && !!slug && !!collection && captureComplete;
 
   // The chosen zone is always offered even if it isn't in the platform's list.
   const timeZones = useMemo(() => {
@@ -214,6 +220,13 @@ export function Assign() {
         </p>
       </section>
 
+      {needsCaptureTime && (
+        <section>
+          <h2 className={sectionLabel}>Capture time</h2>
+          <CaptureTimeEditor files={files} />
+        </section>
+      )}
+
       <section>
         <h2 className={sectionLabel}>Description</h2>
         <textarea
@@ -265,7 +278,9 @@ export function Assign() {
                 ? 'Select a deployment location first'
                 : !collection
                   ? 'Select a target collection first'
-                  : 'Set an uploader identity first'
+                  : !slug
+                    ? 'Set an uploader identity first'
+                    : 'Set a capture time for every file missing one'
           }
           className={`bg-ink text-paper border border-ink px-3.5 py-1.5 text-[14px] font-body font-[600] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${
             canContinue ? 'hover:opacity-90' : 'opacity-40 cursor-not-allowed'
