@@ -71,7 +71,7 @@ function UploadCard({
 
   // UploadMeta.json is an unvalidated JSON cast (older/foreign files may drift),
   // so default the fields the display reads.
-  const edits = upload.meta.editComments ?? [];
+  const edits = Array.isArray(upload.meta.editComments) ? upload.meta.editComments : [];
   const [mode, setMode] = useState<'none' | 'description' | 'deployment'>('none');
   const [description, setDescription] = useState(upload.meta.description ?? '');
   const [locationKey, setLocationKey] = useState<string | null>(null);

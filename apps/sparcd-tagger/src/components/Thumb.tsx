@@ -53,6 +53,12 @@ export function Thumb({
               muted
               playsInline
               preload="metadata"
+              // `preload="metadata"` paints the duration but not always a frame
+              // (Safari / some mobile show black). Nudging currentTime forces the
+              // browser to decode and display the first frame as the poster.
+              onLoadedMetadata={(e) => {
+                e.currentTarget.currentTime = 0.001;
+              }}
               className="w-full h-full object-cover"
             />
             <span
