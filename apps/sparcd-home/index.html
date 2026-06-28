@@ -563,11 +563,26 @@
 
           el.classList.add('live');
           btn.hidden = false;
-          label.innerHTML =
-            'Connected <span class="muted">·</span> <span class="host">' +
-            host(cfg.endpoint) +
-            '</span> <span class="muted">·</span> ' +
-            maskKey(cfg.accessKey);
+          // Build with text nodes, never innerHTML: endpoint/accessKey are
+          // untrusted strings from a sibling tool's shared-session write.
+          function sep() {
+            var s = document.createElement('span');
+            s.className = 'muted';
+            s.textContent = '·';
+            return s;
+          }
+          var hostEl = document.createElement('span');
+          hostEl.className = 'host';
+          hostEl.textContent = host(cfg.endpoint);
+          label.replaceChildren(
+            document.createTextNode('Connected '),
+            sep(),
+            document.createTextNode(' '),
+            hostEl,
+            document.createTextNode(' '),
+            sep(),
+            document.createTextNode(' ' + maskKey(cfg.accessKey)),
+          );
         }
 
         btn.addEventListener('click', function () {
