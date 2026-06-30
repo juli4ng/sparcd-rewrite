@@ -53,8 +53,10 @@ function ProgressList({ snap }: { snap: UploadSnapshot }) {
           return (
             <div
               key={f.id}
-              className="absolute left-0 right-0 grid grid-cols-[14px_1fr_auto] sm:grid-cols-[14px_1fr_120px_72px] items-center gap-x-3 gap-y-1 px-3 border-b border-ruleSoft"
-              style={{ height: ROW, transform: `translateY(${vi.start}px)` }}
+              data-index={vi.index}
+              ref={virtualizer.measureElement}
+              className="absolute left-0 right-0 grid grid-cols-[14px_1fr_auto] sm:grid-cols-[14px_1fr_120px_72px] items-center gap-x-3 gap-y-1 px-3 min-h-[40px] border-b border-ruleSoft"
+              style={{ transform: `translateY(${vi.start}px)` }}
             >
               <span
                 className={`w-2 h-2 rounded-full ${STATE_DOT[f.state]}`}

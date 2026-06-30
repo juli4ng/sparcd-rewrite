@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import {
   scanDataTransfer,
@@ -13,8 +13,9 @@ import {
 // <input webkitdirectory>, so whole-folder selection is impossible there.
 // A coarse-only pointer without File System Access is our proxy for a touch
 // device that can't pick a folder; it falls back to a plain file picker.
-const supportsFolderPick =
-  supportsDirectoryHandle || !window.matchMedia?.('(pointer: coarse)').matches;
+function detectFolderPick() {
+  return supportsDirectoryHandle || !window.matchMedia?.('(pointer: coarse)').matches;
+}
 
 export function DropZone() {
   const setFiles = useStore((s) => s.setFiles);
@@ -23,6 +24,18 @@ export function DropZone() {
   const [hover, setHover] = useState(false);
   const [noneFound, setNoneFound] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // supportsDirectoryHandle is a static browser capability; only the
+  // coarse-pointer proxy can flip mid-session (e.g. docking to/from tablet
+  // mode), so track that media query instead of snapshotting it once.
+  const [supportsFolderPick, setSupportsFolderPick] = useState(detectFolderPick);
+  useEffect(() => {
+    if (supportsDirectoryHandle) return;
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setSupportsFolderPick(detectFolderPick());
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
 
   async function commit(
     scan: () => Promise<ScannedFile[]> | ScannedFile[],
